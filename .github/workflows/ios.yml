@@ -49,22 +49,26 @@ jobs:
           cd ios
           pod install
 
-      - name: Averiguar el esquema de Xcode
+      - name: Averiguar el proyecto y el esquema
         id: scheme
         run: |
           cd ios
-          SCHEME=$(xcodebuild -workspace *.xcworkspace -list -json \
-            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).workspace.schemes[0]))")
-          echo "Esquema detectado: $SCHEME"
-          test -n "$SCHEME"
-          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          # El esquema de la app se llama igual que su .xcodeproj.
+          # Ojo: NO sirve coger el primero de la lista, porque aparecen
+          # esquemas de los Pods (EXConstants, etc.) que no se pueden archivar.
+          PROJECT=$(basename "$(ls -d *.xcodeproj | head -1)" .xcodeproj)
+          echo "Proyecto de la app: $PROJECT"
+          test -n "$PROJECT"
+          echo "--- esquemas que ve Xcode ---"
+          xcodebuild -list -workspace "$PROJECT.xcworkspace" || true
+          echo "scheme=$PROJECT" >> "$GITHUB_OUTPUT"
 
       - name: Compilar sin firmar
         run: |
           set -o pipefail
           cd ios
           xcodebuild \
-            -workspace *.xcworkspace \
+            -workspace "${{ steps.scheme.outputs.scheme }}.xcworkspace" \
             -scheme "${{ steps.scheme.outputs.scheme }}" \
             -configuration Release \
             -sdk iphoneos \
