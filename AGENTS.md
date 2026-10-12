@@ -39,3 +39,10 @@ Docs: https://docs.expo.dev/eas/index.md
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
 - Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
+
+## Mostrar cosas al usuario en el móvil (panel «Revisión»)
+
+El panel de revisión del *escritorio* no llega al móvil. Para enseñar algo en la app,
+deja el fichero en `%USERPROFILE%\.opencode\review\` (imágenes, texto, HTML…) y avisa.
+La app lo lista (`GET /api/fs/list`) y lo abre (`GET /api/fs/read/<ruta absoluta>`),
+desde el chat: `⋯` → **Revisión**. Para imágenes usa PNG/JPG (no SVG: RN no lo pinta).

@@ -1,59 +1,66 @@
-import { SymbolView } from 'expo-symbols';
 import { useEffect, useMemo, useRef } from 'react';
-import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Image, StyleSheet, Text, View } from 'react-native';
 
 import type { Palette } from '@/theme/palettes';
 import { usePalette } from '@/theme/theme';
 
+// Icono de OpenCode (centro) y símbolo de nixer (pie)
+const OPENCODE = require('@/assets/images/opencode-icon.png');
+const NIXER = require('@/assets/images/splash-icon.png');
+
+/**
+ * Pantalla de carga:
+ * icono de OpenCode centrado y, abajo, `from` + (símbolo + nixer).
+ * Regla de la marca: «studios» NO aparece aquí (solo en el ©).
+ */
 export default function Splash() {
   const t = usePalette();
   const s = useMemo(() => makeStyles(t), [t]);
 
-  const scale = useRef(new Animated.Value(0.7)).current;
+  const scale = useRef(new Animated.Value(0.72)).current;
   const opacity = useRef(new Animated.Value(0)).current;
   const pulse = useRef(new Animated.Value(1)).current;
-  const textOpacity = useRef(new Animated.Value(0)).current;
+  const foot = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.spring(scale, { toValue: 1, useNativeDriver: true, bounciness: 9, speed: 13 }),
+      Animated.spring(scale, { toValue: 1, useNativeDriver: true, bounciness: 8, speed: 13 }),
       Animated.timing(opacity, { toValue: 1, duration: 420, useNativeDriver: true }),
-      Animated.timing(textOpacity, {
-        toValue: 1,
-        duration: 500,
-        delay: 220,
-        useNativeDriver: true,
-      }),
+      Animated.timing(foot, { toValue: 1, duration: 520, delay: 260, useNativeDriver: true }),
     ]).start(() => {
       Animated.loop(
         Animated.sequence([
           Animated.timing(pulse, {
-            toValue: 1.07,
-            duration: 950,
+            toValue: 1.04,
+            duration: 1150,
             easing: Easing.inOut(Easing.ease),
             useNativeDriver: true,
           }),
           Animated.timing(pulse, {
             toValue: 1,
-            duration: 950,
+            duration: 1150,
             easing: Easing.inOut(Easing.ease),
             useNativeDriver: true,
           }),
         ])
       ).start();
     });
-  }, [scale, opacity, pulse, textOpacity]);
+  }, [scale, opacity, foot, pulse]);
 
   return (
     <View style={s.root}>
       <Animated.View style={{ opacity, transform: [{ scale }] }}>
-        <Animated.View style={[s.logo, { transform: [{ scale: pulse }] }]}>
-          <SymbolView name={'terminal' as never} tintColor={t.ink} size={38} />
+        <Animated.View style={[s.glow, { transform: [{ scale: pulse }] }]}>
+          <Image source={OPENCODE} style={s.mark} resizeMode="contain" />
         </Animated.View>
       </Animated.View>
-      <Animated.View style={{ opacity: textOpacity, alignItems: 'center', gap: 6 }}>
-        <Text style={s.name}>OpenCode</Text>
-        <Text style={s.sub}>Mobile</Text>
+
+      <Animated.View style={[s.foot, { opacity: foot }]}>
+        <Text style={s.from}>from</Text>
+        <View style={s.lockup}>
+          <Image source={NIXER} style={s.markSmall} resizeMode="contain" />
+          <Text style={s.name}>nixer</Text>
+        </View>
       </Animated.View>
     </View>
   );
@@ -61,26 +68,29 @@ export default function Splash() {
 
 const makeStyles = (t: Palette) =>
   StyleSheet.create({
+    // centrado real: el icono va centrado en TODA la pantalla (el pie es absoluto)
     root: {
       flex: 1,
       backgroundColor: t.bg,
       alignItems: 'center',
       justifyContent: 'center',
-      gap: 26,
     },
-    logo: {
-      width: 96,
-      height: 96,
-      borderRadius: 26,
-      backgroundColor: t.accent,
-      alignItems: 'center',
-      justifyContent: 'center',
+    glow: {
       shadowColor: t.accent,
-      shadowOpacity: 0.45,
-      shadowRadius: 26,
+      shadowOpacity: 0.35,
+      shadowRadius: 34,
       shadowOffset: { width: 0, height: 12 },
-      elevation: 12,
+      elevation: 16,
     },
-    name: { color: t.text, fontSize: 24, fontWeight: '700', letterSpacing: 0.3 },
-    sub: { color: t.dim, fontSize: 13, letterSpacing: 3, textTransform: 'uppercase' },
+    mark: { width: 128, height: 128, borderRadius: 28 },
+    foot: {
+      position: 'absolute',
+      bottom: 52,
+      alignItems: 'center',
+      gap: 7,
+    },
+    from: { color: t.dim, fontSize: 13 },
+    lockup: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+    markSmall: { width: 50, height: 50 },
+    name: { color: t.text, fontSize: 23, fontWeight: '700', letterSpacing: -0.5 },
   });

@@ -1,6 +1,7 @@
+import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -20,6 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import Drawer from '@/components/drawer';
+import ContextGauge from '@/components/context-gauge';
 import FormCard from '@/components/form-card';
 import Md from '@/components/md';
 import ModelPicker from '@/components/model-picker';
@@ -29,23 +31,31 @@ import Sheet, { SheetPeek } from '@/components/sheet';
 import {
   cancelForm,
   compactSession,
+  contextTokens,
   deleteSession,
   forkSession,
+  getCommands,
   getForms,
   getMessages,
+  getModels,
   getPermissions,
+  getSession,
   getSessionDiff,
+  getSkills,
   interruptSession,
   renameSession,
   replyForm,
   replyPermission,
+  runCommand,
   sendPrompt,
   setSessionModel,
+  type CommandInfo,
   type FileDiff,
   type FormInfo,
   type Msg,
   type Part,
   type PermissionRequest,
+  type SkillInfo,
 } from '@/lib/api';
 import { pickFiles, pickImages, takePhoto, type Picked } from '@/lib/attachments';
 import { subscribeEvents, useConnection, type ConnState } from '@/lib/events';
@@ -147,11 +157,13 @@ function Header({
   conn,
   onMenu,
   onMore,
+  extra,
 }: {
   title: string;
   conn: ConnState;
   onMenu: () => void;
   onMore: () => void;
+  extra?: ReactNode;
 }) {
   const s = useStyles();
   const t = usePalette();
@@ -168,6 +180,7 @@ function Header({
         <Text style={s.connText}>{CONN_LABEL[conn]}</Text>
       </Pressable>
       <View style={{ flex: 1 }} />
+      {extra ? <View style={{ marginRight: 6 }}>{extra}</View> : null}
       <Pressable hitSlop={10} onPress={onMore}>
         <Sym name="ellipsis" size={18} color={t.dim} />
       </Pressable>
@@ -214,6 +227,8 @@ function ModelBar({
 function ToolRow({ part }: { part: Part }) {
   const s = useStyles();
   const t = usePalette();
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const status = part.state?.status;
   const done = status === 'completed' || status === 'success';
   const failed = status === 'error' || status === 'failed';
@@ -223,30 +238,112 @@ function ToolRow({ part }: { part: Part }) {
     Animated.timing(v, { toValue: 1, duration: 300, useNativeDriver: true }).start();
   }, [v]);
 
+  const input: Record<string, unknown> = part.state?.input ?? {};
+  const command = typeof input.command === 'string' ? (input.command as string) : '';
+  const code = typeof input.code === 'string' ? (input.code as string) : '';
+  const inputText =
+    command || code || (Object.keys(input).length > 0 ? JSON.stringify(input, null, 2) : '');
+  const outputText = (part.state?.content ?? [])
+    .map((c) => c.text ?? '')
+    .filter((x) => x.length > 0)
+    .join('\n');
+  const ms =
+    part.time?.completed != null && part.time?.ran != null
+      ? part.time.completed - part.time.ran
+      : undefined;
+
+  async function copy(kind: 'in' | 'out', text: string) {
+    await Clipboard.setStringAsync(text);
+    haptic('tap');
+    setCopied(kind);
+    setTimeout(() => setCopied(null), 1200);
+  }
+
   return (
     <Animated.View
       style={[
-        s.toolRow,
+        s.toolWrap,
         {
           opacity: v,
           transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }],
         },
       ]}>
-      <Sym name="wrench.and.screwdriver" size={13} color={t.dim} />
-      <Text style={s.toolText}>
-        {part.name}
-        {typeof part.state?.input?.command === 'string'
-          ? ` · ${(part.state.input.command as string).slice(0, 40)}`
-          : ''}
-      </Text>
-      <View style={{ flex: 1 }} />
-      {failed ? (
-        <Sym name="xmark" size={13} color="#fca5a5" />
-      ) : done ? (
-        <CheckMark color={t.ok} />
-      ) : (
-        <Spinner color={t.dim} />
-      )}
+      <Pressable
+        style={s.toolRow}
+        onPress={() => {
+          haptic('tap');
+          setOpen((o) => !o);
+        }}>
+        <Sym name="wrench.and.screwdriver" size={13} color={t.dim} />
+        <Text style={s.toolText} numberOfLines={open ? 2 : 1}>
+          {part.name}
+          {command ? ` · ${command.split('\n')[0].slice(0, 60)}` : ''}
+        </Text>
+        <View style={{ flex: 1 }} />
+        {failed ? (
+          <Sym name="xmark" size={13} color="#fca5a5" />
+        ) : done ? (
+          <CheckMark color={t.ok} />
+        ) : (
+          <Spinner color={t.dim} />
+        )}
+        <Sym name={open ? 'chevron.up' : 'chevron.down'} size={12} color={t.dimSoft} />
+      </Pressable>
+
+      {open ? (
+        <View style={s.toolBody}>
+          {inputText ? (
+            <>
+              <View style={s.toolHead}>
+                <Text style={s.toolLabel}>Entrada</Text>
+                <Pressable hitSlop={8} onPress={() => copy('in', inputText)}>
+                  <Sym
+                    name={copied === 'in' ? 'checkmark' : 'doc.on.doc'}
+                    size={12}
+                    color={copied === 'in' ? t.ok : t.dimSoft}
+                  />
+                </Pressable>
+              </View>
+              <View style={s.codeBox}>
+                <Text style={s.codeText} numberOfLines={14}>
+                  {inputText}
+                </Text>
+              </View>
+            </>
+          ) : null}
+
+          {outputText ? (
+            <>
+              <View style={s.toolHead}>
+                <Text style={s.toolLabel}>Salida</Text>
+                <Pressable hitSlop={8} onPress={() => copy('out', outputText)}>
+                  <Sym
+                    name={copied === 'out' ? 'checkmark' : 'doc.on.doc'}
+                    size={12}
+                    color={copied === 'out' ? t.ok : t.dimSoft}
+                  />
+                </Pressable>
+              </View>
+              <View style={s.codeBox}>
+                <Text style={s.codeText} numberOfLines={16}>
+                  {outputText}
+                </Text>
+              </View>
+            </>
+          ) : done ? (
+            <Text style={s.toolEmpty}>Sin salida.</Text>
+          ) : null}
+
+          <View style={s.toolMeta}>
+            {ms != null ? (
+              <Text style={s.metaText}>
+                {ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`}
+              </Text>
+            ) : null}
+            <Text style={s.metaText}>{status ?? ''}</Text>
+          </View>
+        </View>
+      ) : null}
     </Animated.View>
   );
 }
@@ -334,20 +431,28 @@ function EmptyState() {
 function AttachMenu({
   open,
   busy,
+  skills,
   onClose,
   onPick,
 }: {
   open: boolean;
   busy: boolean;
+  skills: number;
   onClose: () => void;
-  onPick: (kind: 'camera' | 'library' | 'file') => void;
+  onPick: (kind: 'camera' | 'library' | 'file' | 'skill') => void;
 }) {
   const s = useStyles();
   const t = usePalette();
-  const rows: { kind: 'camera' | 'library' | 'file'; icon: string; label: string; sub: string }[] = [
+  const rows: { kind: 'camera' | 'library' | 'file' | 'skill'; icon: string; label: string; sub: string }[] = [
     { kind: 'camera', icon: 'camera', label: 'Hacer una foto', sub: 'con la cámara' },
     { kind: 'library', icon: 'photo.on.rectangle', label: 'Elegir foto', sub: 'de tu galería (hasta 4)' },
     { kind: 'file', icon: 'doc', label: 'Elegir archivo', sub: 'texto, código, PDF…' },
+    {
+      kind: 'skill',
+      icon: 'sparkles',
+      label: 'Usar una skill',
+      sub: skills > 0 ? `${skills} disponible${skills === 1 ? '' : 's'}` : 'ninguna instalada',
+    },
   ];
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
@@ -378,11 +483,62 @@ function AttachMenu({
   );
 }
 
+/** Lista para elegir una skill del servidor. */
+function SkillPicker({
+  open,
+  skills,
+  onClose,
+  onPick,
+}: {
+  open: boolean;
+  skills: SkillInfo[];
+  onClose: () => void;
+  onPick: (sk: SkillInfo) => void;
+}) {
+  const s = useStyles();
+  const t = usePalette();
+  return (
+    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={s.modalRoot}>
+        <Pressable style={s.modalScrim} onPress={onClose} />
+        <View style={s.modalCard}>
+          <Text style={s.modalTitle}>Usar una skill</Text>
+          <ScrollView style={{ maxHeight: 400 }} keyboardShouldPersistTaps="handled">
+            {skills.length === 0 ? (
+              <Text style={s.emptySub}>No hay skills instaladas en el servidor.</Text>
+            ) : null}
+            {skills.map((sk) => (
+              <Pressable
+                key={sk.id}
+                style={s.modalRow}
+                onPress={() => {
+                  haptic('select');
+                  onPick(sk);
+                }}>
+                <Sym name="sparkles" size={16} color={t.accent} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.modalRowTitle}>{sk.name ?? sk.id}</Text>
+                  {sk.description ? (
+                    <Text style={s.modalRowSub} numberOfLines={2}>
+                      {sk.description}
+                    </Text>
+                  ) : null}
+                </View>
+                <Sym name="plus.circle" size={16} color={t.dimSoft} />
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 export default function ChatView({ sessionId, title }: { sessionId?: string; title?: string }) {
   const s = useStyles();
   const t = usePalette();
   const { density, flat } = useTheme();
-  const { prefs } = usePrefs();
+  const { prefs, set } = usePrefs();
   const conn = useConnection();
   const gap = density === 'compact' ? 6 : density === 'spacious' ? 18 : 12;
   const radius = density === 'compact' ? 12 : density === 'spacious' ? 20 : 16;
@@ -396,6 +552,10 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
   const [attachOpen, setAttachOpen] = useState(false);
   const [attBusy, setAttBusy] = useState(false);
   const [att, setAtt] = useState<Picked[]>([]);
+  const [pickedSkills, setPickedSkills] = useState<SkillInfo[]>([]);
+  const [skillPicker, setSkillPicker] = useState(false);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [cmds, setCmds] = useState<CommandInfo[]>([]);
 
   const [page, setPage] = useState<Msg[]>([]); // últimos mensajes (orden ascendente)
   const [older, setOlder] = useState<Msg[]>([]); // páginas antiguas ya cargadas
@@ -406,6 +566,8 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
   const [perms, setPerms] = useState<PermissionRequest[]>([]);
   const [forms, setForms] = useState<FormInfo[]>([]);
   const [diff, setDiff] = useState<FileDiff[]>([]);
+  const [cost, setCost] = useState<number | undefined>(undefined);
+  const [limits, setLimits] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -446,6 +608,12 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
         setForms(await getForms(sessionId));
       } catch {
         setForms([]);
+      }
+      try {
+        const ses = await getSession(sessionId);
+        setCost(ses?.cost);
+      } catch {
+        setCost(undefined);
       }
       try {
         setDiff(await getSessionDiff(sessionId));
@@ -553,6 +721,33 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
     if (conn === 'online') load();
   }, [conn, load]);
 
+  /** Límites de contexto por modelo (para el % del anillo). Una sola vez. */
+  useEffect(() => {
+    getModels()
+      .then((list) => {
+        const map: Record<string, number> = {};
+        for (const m of list) {
+          const ctx = m.limit?.context;
+          if (ctx) map[`${m.providerID}/${m.id}`] = ctx;
+        }
+        setLimits(map);
+      })
+      .catch(() => {});
+  }, []);
+
+  /** Comandos y skills del servidor (para «/» y para adjuntar). Una sola vez. */
+  useEffect(() => {
+    const load2 = () => {
+      getCommands()
+        .then(setCmds)
+        .catch(() => {});
+      getSkills()
+        .then(setSkills)
+        .catch(() => {});
+    };
+    load2();
+  }, []);
+
   const msgs = useMemo(() => {
     const ids = new Set(page.map((m) => m.id));
     return [...older.filter((m) => !ids.has(m.id)), ...page];
@@ -561,9 +756,9 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
   const info = useMemo(() => {
     for (let i = msgs.length - 1; i >= 0; i--) {
       const mm = msgs[i].model;
-      if (mm?.id) return { model: mm.id, variant: mm.variant };
+      if (mm?.id) return { model: mm.id, variant: mm.variant, providerID: mm.providerID };
     }
-    return { model: undefined, variant: undefined };
+    return { model: undefined, variant: undefined, providerID: undefined };
   }, [msgs]);
 
   const working = useMemo(() => {
@@ -580,8 +775,28 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
     [msgs]
   );
 
+  /** Tokens que ocupa el contexto: los de la ÚLTIMA respuesta del agente. */
+  const ctxTokens = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.type === 'assistant' && m.tokens) return contextTokens(m.tokens);
+    }
+    return 0;
+  }, [msgs]);
+
+  /** Límite de contexto del modelo de la sesión (para el % del anillo). */
+  const modelLimit =
+    info.providerID && info.model ? limits[`${info.providerID}/${info.model}`] : undefined;
+
   const busy = working || !!stream?.text || thinking;
   const canSend = !!sessionId && (draft.trim().length > 0 || att.length > 0) && !sending;
+
+  // modo comando: «/» sin espacios todavía
+  const cmdQuery = draft.startsWith('/') && !/\s/.test(draft) ? draft.slice(1).toLowerCase() : null;
+  const cmdMatches =
+    cmdQuery === null
+      ? []
+      : cmds.filter((c) => c.name.toLowerCase().startsWith(cmdQuery)).slice(0, 5);
 
   async function stop() {
     if (!sessionId) return;
@@ -596,13 +811,27 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
 
   async function send() {
     if (!sessionId || !canSend) return;
-    const text = draft.trim() || 'Mira el adjunto.';
+    const raw = draft.trim();
+    const text = raw || 'Mira el adjunto.';
+    const files = att.map(({ uri, name }) => ({ uri, name }));
+    const skillIds = pickedSkills.map((sk) => ({ id: sk.id }));
+    const delivery = prefs.steer ? ('steer' as const) : undefined;
+
+    // ¿es un comando?  →  /nombre args
+    const m = raw.match(/^\/([a-zA-Z0-9._-]+)\s*([\s\S]*)$/);
+    const cmd = m ? cmds.find((c) => c.name === m[1]) : undefined;
+
     setDraft('');
     setAtt([]);
+    setPickedSkills([]);
     setSending(true);
     haptic('tap');
     try {
-      await sendPrompt(sessionId, text, att.map(({ uri, name }) => ({ uri, name })));
+      if (cmd) {
+        await runCommand(sessionId, cmd.name, m?.[2] ?? '', { files, skills: skillIds, delivery });
+      } else {
+        await sendPrompt(sessionId, text, files, { skills: skillIds, delivery });
+      }
       await load();
     } catch (e) {
       haptic('error');
@@ -612,8 +841,12 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
     }
   }
 
-  async function addAttachment(kind: 'camera' | 'library' | 'file') {
+  async function addAttachment(kind: 'camera' | 'library' | 'file' | 'skill') {
     setAttachOpen(false);
+    if (kind === 'skill') {
+      setSkillPicker(true);
+      return;
+    }
     setAttBusy(true);
     try {
       const picked =
@@ -638,6 +871,7 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
         <Header
           title={title ?? 'OpenCode'}
           conn={conn}
+          extra={<ContextGauge cost={cost} tokens={ctxTokens} limit={modelLimit} />}
           onMenu={() => {
             haptic('tap');
             setMenu(true);
@@ -777,8 +1011,24 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
 
         {sessionId ? (
           <View style={s.composerWrap}>
-            {att.length > 0 ? (
+            {att.length > 0 || pickedSkills.length > 0 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attRow}>
+                {pickedSkills.map((sk, i) => (
+                  <View key={`sk-${sk.id}-${i}`} style={s.attChip}>
+                    <Sym name="sparkles" size={13} color={t.accent} />
+                    <Text style={s.attName} numberOfLines={1}>
+                      {sk.name ?? sk.id}
+                    </Text>
+                    <Pressable
+                      hitSlop={8}
+                      onPress={() => {
+                        haptic('tap');
+                        setPickedSkills((l) => l.filter((_, idx) => idx !== i));
+                      }}>
+                      <Sym name="xmark.circle.fill" size={15} color={t.dimSoft} />
+                    </Pressable>
+                  </View>
+                ))}
                 {att.map((a, i) => (
                   <View key={`${a.name}-${i}`} style={s.attChip}>
                     {a.kind === 'image' ? (
@@ -802,37 +1052,72 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
               </ScrollView>
             ) : null}
 
-            <View style={s.composer}>
-              <TextInput
-                style={s.input}
-                placeholder="Escribe…"
-                placeholderTextColor={t.dim}
-                value={draft}
-                onChangeText={setDraft}
-                multiline
-              />
+            {cmdMatches.length > 0 ? (
+              <View style={s.cmdCard}>
+                {cmdMatches.map((c) => (
+                  <Pressable
+                    key={c.name}
+                    style={s.cmdRow}
+                    onPress={() => {
+                      haptic('select');
+                      setDraft(`/${c.name} `);
+                    }}>
+                    <Text style={s.cmdName}>/{c.name}</Text>
+                    {c.description ? (
+                      <Text style={s.cmdDesc} numberOfLines={1}>
+                        {c.description}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+
+            {busy ? (
               <Pressable
-                style={s.iconBtn}
+                style={s.steerRow}
                 onPress={() => {
-                  haptic('tap');
-                  setAttachOpen(true);
+                  haptic('select');
+                  set({ steer: !prefs.steer });
                 }}>
-                {attBusy ? (
-                  <ActivityIndicator size="small" color={t.dim} />
-                ) : (
-                  <Sym name="paperclip" size={16} color={att.length > 0 ? t.accent : t.textSoft} />
-                )}
+                <View style={[s.swTrack, prefs.steer && { backgroundColor: t.accent }]}>
+                  <View style={[s.swKnob, prefs.steer && { left: 16 }]} />
+                </View>
+                <Text style={s.steerText}>
+                  {prefs.steer ? 'Se enviará sin interrumpir' : 'Se enviará al terminar'}
+                </Text>
               </Pressable>
-              <Pressable
-                style={[
-                  s.iconBtn,
-                  { backgroundColor: t.accent, borderColor: t.accent },
-                  (!busy && !canSend) || sending ? { opacity: 0.5 } : null,
-                ]}
-                onPress={busy ? stop : send}
-                disabled={sending || (!busy && !canSend)}>
-                <Sym name={busy ? 'stop.fill' : 'arrow.up'} size={15} color={t.ink} />
-              </Pressable>
+            ) : null}
+
+            <View style={s.composer}>
+              <View style={s.composerBox}>
+                <TextInput
+                  style={s.composerInput}
+                  placeholder="Escribe…"
+                  placeholderTextColor={t.dim}
+                  value={draft}
+                  onChangeText={setDraft}
+                  multiline
+                />
+                <Pressable
+                  style={s.inerBtn}
+                  onPress={() => {
+                    haptic('tap');
+                    setAttachOpen(true);
+                  }}>
+                  {attBusy ? (
+                    <ActivityIndicator size="small" color={t.dim} />
+                  ) : (
+                    <Sym name="paperclip" size={16} color={att.length > 0 ? t.accent : t.dimSoft} />
+                  )}
+                </Pressable>
+                <Pressable
+                  style={[s.inerBtn, s.inerSend, (!busy && !canSend) || sending ? { opacity: 0.5 } : null]}
+                  onPress={busy ? stop : send}
+                  disabled={sending || (!busy && !canSend)}>
+                  <Sym name={busy ? 'stop.fill' : 'arrow.up'} size={14} color={t.ink} />
+                </Pressable>
+              </View>
             </View>
           </View>
         ) : null}
@@ -847,8 +1132,18 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
       <AttachMenu
         open={attachOpen}
         busy={attBusy}
+        skills={skills.length}
         onClose={() => setAttachOpen(false)}
         onPick={addAttachment}
+      />
+      <SkillPicker
+        open={skillPicker}
+        skills={skills}
+        onClose={() => setSkillPicker(false)}
+        onPick={(sk) => {
+          setSkillPicker(false);
+          setPickedSkills((l) => (l.some((x) => x.id === sk.id) ? l : [...l, sk]));
+        }}
       />
       <ModelPicker
         visible={pickerOpen}
@@ -870,6 +1165,18 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
         visible={sessionMenu}
         title={title ?? 'Sesión'}
         onClose={() => setSessionMenu(false)}
+        onReview={() => {
+          setSessionMenu(false);
+          if (sessionId) {
+            router.push({ pathname: '/revision', params: { id: sessionId } } as never);
+          }
+        }}
+        onRevert={() => {
+          setSessionMenu(false);
+          if (sessionId) {
+            router.push({ pathname: '/revert', params: { id: sessionId } } as never);
+          }
+        }}
         onRename={async (nt) => {
           setSessionMenu(false);
           if (!sessionId) return;
@@ -995,15 +1302,44 @@ const makeStyles = (t: Palette) =>
     moreBtn: { alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 14 },
     moreText: { color: t.accent, fontSize: 12.5, fontWeight: '600' },
 
+    toolWrap: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: t.lineSoft,
+    },
     toolRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 8,
       paddingVertical: 8,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: t.lineSoft,
     },
     toolText: { color: t.dim, fontSize: 12.5, flexShrink: 1 },
+    toolBody: { paddingBottom: 10 },
+    toolHead: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginTop: 4,
+      marginBottom: 5,
+    },
+    toolLabel: {
+      color: t.dimSoft,
+      fontSize: 10.5,
+      fontWeight: '700',
+      textTransform: 'uppercase',
+      letterSpacing: 0.4,
+    },
+    codeBox: {
+      backgroundColor: t.panel,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+      borderRadius: 9,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+    },
+    codeText: { color: t.textSoft, fontSize: 11.5, fontFamily: mono, lineHeight: 16 },
+    toolMeta: { flexDirection: 'row', gap: 12, marginTop: 7 },
+    metaText: { color: t.dimSoft, fontSize: 10.5 },
+    toolEmpty: { color: t.dimSoft, fontSize: 11.5, marginTop: 4 },
 
     thinking: { color: t.dim, fontSize: 13, fontStyle: 'italic', marginLeft: 6 },
     thinkingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 4 },
@@ -1075,35 +1411,78 @@ const makeStyles = (t: Palette) =>
     attThumb: { width: 22, height: 22, borderRadius: 5 },
     attName: { color: t.textSoft, fontSize: 12, flexShrink: 1 },
 
-    composer: {
+    composer: { paddingHorizontal: 13, paddingVertical: 10 },
+    cmdCard: {
+      marginHorizontal: 13,
+      marginBottom: 6,
+      backgroundColor: t.panel2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+      borderRadius: 12,
+      paddingVertical: 4,
+      overflow: 'hidden',
+    },
+    cmdRow: {
       flexDirection: 'row',
-      alignItems: 'flex-end',
-      gap: 9,
-      paddingHorizontal: 13,
+      alignItems: 'center',
+      gap: 10,
+      paddingHorizontal: 12,
       paddingVertical: 10,
     },
-    input: {
-      flex: 1,
+    cmdName: { color: t.accent, fontSize: 13, fontWeight: '700', fontFamily: mono },
+    cmdDesc: { color: t.dim, fontSize: 11.5, flex: 1 },
+    steerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 9,
+      paddingHorizontal: 16,
+      paddingBottom: 8,
+    },
+    swTrack: {
+      width: 34,
+      height: 20,
+      borderRadius: 10,
+      backgroundColor: t.line,
+      justifyContent: 'center',
+    },
+    swKnob: {
+      width: 16,
+      height: 16,
+      borderRadius: 8,
+      backgroundColor: '#fff',
+      position: 'absolute',
+      left: 2,
+    },
+    steerText: { color: t.dim, fontSize: 11.5 },
+    composerBox: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      gap: 6,
       backgroundColor: t.panel2,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: t.line,
       borderRadius: 20,
-      paddingHorizontal: 14,
-      paddingVertical: 10,
+      paddingLeft: 14,
+      paddingRight: 6,
+      paddingVertical: 6,
+      minHeight: 46,
+    },
+    composerInput: {
+      flex: 1,
       color: t.text,
       fontSize: 14,
+      paddingTop: 8,
+      paddingBottom: 8,
       maxHeight: 120,
     },
-    iconBtn: {
-      width: 34,
-      height: 34,
-      borderRadius: 17,
+    inerBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: t.panel2,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: t.line,
     },
+    inerSend: { backgroundColor: t.accent },
 
     modalRoot: { flex: 1, justifyContent: 'flex-end' },
     modalScrim: {

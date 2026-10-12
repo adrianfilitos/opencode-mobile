@@ -18,6 +18,10 @@ export type Prefs = {
   haptics: boolean;
   /** Aviso dentro de la app cuando el agente termina. */
   inAppNotify: boolean;
+  /** Enviar al agente sin interrumpir (steering). */
+  steer: boolean;
+  /** Tema de ntfy para probar los avisos (no se sube al repo). */
+  ntfyTopic: string;
   quickActions: QuickAction[];
 };
 
@@ -28,6 +32,8 @@ export const DEFAULT_PREFS: Prefs = {
   variant: null,
   haptics: true,
   inAppNotify: true,
+  steer: false,
+  ntfyTopic: '',
   quickActions: [
     { id: 'qa-1', label: 'Tests', text: 'Corre los tests y arregla lo que falle.' },
     { id: 'qa-2', label: 'Commit', text: 'Haz un commit con los cambios actuales.' },

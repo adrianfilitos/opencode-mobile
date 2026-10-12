@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
+  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -20,6 +21,7 @@ import { usePalette } from '@/theme/theme';
 import {
   apiGet,
   createSession,
+  formatUSD,
   getMessages,
   getProjects,
   loadCreds,
@@ -235,7 +237,15 @@ export default function Drawer({ open, onClose }: { open: boolean; onClose: () =
           { transform: [{ translateX: x }], paddingTop: insets.top + 14, paddingBottom: insets.bottom + 14 },
         ]}>
         <View style={s.drawerTop}>
-          <Text style={s.brand}>OpenCode</Text>
+          <Image
+            source={require('@/assets/images/splash-icon.png')}
+            style={s.mark}
+            resizeMode="contain"
+          />
+          <View>
+            <Text style={s.brand}>nixer</Text>
+            <Text style={s.brandSub}>OpenCode Mobile</Text>
+          </View>
           <View style={{ flex: 1 }} />
           <Sym name="slider.horizontal.3" size={16} color={t.dim} />
         </View>
@@ -319,7 +329,10 @@ export default function Drawer({ open, onClose }: { open: boolean; onClose: () =
                     }
                     row={{
                       title: ses.title?.trim() || `Nueva · ${ses.id.slice(-4)}`,
-                      meta: ses.model?.id ?? ses.agent ?? '',
+                      meta:
+                        (ses.cost ?? 0) > 0
+                          ? formatUSD(ses.cost)
+                          : ses.model?.id ?? ses.agent ?? '',
                       icon: 'bubble.left',
                     }}
                   />
@@ -433,8 +446,10 @@ const makeStyles = (t: Palette) =>
       padding: 14,
       zIndex: 11,
     },
-    drawerTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-    brand: { color: t.text, fontSize: 16, fontWeight: '700' },
+    drawerTop: { flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 12 },
+    mark: { width: 30, height: 30 },
+    brand: { color: t.text, fontSize: 16, fontWeight: '800', letterSpacing: -0.4, lineHeight: 19 },
+    brandSub: { color: t.dimSoft, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase' },
 
     newBtn: {
       flexDirection: 'row',

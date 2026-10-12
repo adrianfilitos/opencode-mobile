@@ -51,10 +51,12 @@ src/
     conectar.tsx          escáner QR + emparejamiento
     proyectos.tsx         proyectos → sesiones
     sesion/[id].tsx       el chat de una sesión
+    revision.tsx          panel Revisión (lo que el agente muestra + diff)
     ajustes/              menú, servidor, modelo, apariencia, rápidas, acerca
   components/
     chat-view.tsx         pantalla principal del chat (grande)
     form-card.tsx         responder las *questions* (formularios) del agente
+    context-gauge.tsx     anillo de contexto/coste de la cabecera
     drawer.tsx            menú lateral + búsqueda
     md.tsx                markdown + copiar código
     sheet.tsx             panel inferior (Diff / Herramientas / Permisos)
@@ -263,6 +265,12 @@ gh run download -n OpenCode-unsigned-ipa -D "$env:USERPROFILE\Downloads\oc-ipa"
 ---
 
 ## 10. Notas del entorno
+
+- **Panel Revisión (móvil):** el panel de revisión del *escritorio* es local del PC y **no
+  llega al móvil**. Para que algo aparezca en la app, el agente lo deja en
+  `%USERPROFILE%\.opencode\review\` y la app la lee con `GET /api/fs/list` +
+  `GET /api/fs/read/<ruta absoluta>` (imágenes en grande al tocar, texto al tocar).
+  Se abre desde el chat: `⋯` → **Revisión**.
 
 - El servidor escucha en `0.0.0.0:49374` y hay reglas de firewall
   ("OpenCode Mobile") para 49374 y 8081.

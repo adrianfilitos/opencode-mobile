@@ -58,6 +58,20 @@ export default function ToastHost() {
   useEffect(() => {
     if (!prefs.inAppNotify) return;
     const unsub = subscribeEvents((e) => {
+      // pregunta (question) nueva → aviso para que no se quede colgada
+      if (e.type === 'form.created') {
+        const sid = e.data?.sessionID;
+        if (!sid) return;
+        seq.current += 1;
+        show({
+          id: seq.current,
+          title: 'Te están preguntando',
+          body: titles.current[sid] ?? 'Sesión',
+          sessionID: sid,
+          ok: false,
+        });
+        return;
+      }
       const ok = e.type === 'session.execution.succeeded';
       const fail = e.type === 'session.execution.failed';
       if (!ok && !fail) return;

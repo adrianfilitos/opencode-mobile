@@ -45,6 +45,8 @@ export default function SessionMenu({
   onFork,
   onCompact,
   onDelete,
+  onReview,
+  onRevert,
 }: {
   visible: boolean;
   title: string;
@@ -53,6 +55,8 @@ export default function SessionMenu({
   onFork: () => void;
   onCompact: () => void;
   onDelete: () => void;
+  onReview: () => void;
+  onRevert: () => void;
 }) {
   const s = useStyles();
   const t = usePalette();
@@ -98,6 +102,8 @@ export default function SessionMenu({
           ) : (
             <>
               <Row icon="pencil" label="Renombrar" onPress={() => setRenaming(true)} />
+              <Row icon="eye" label="Revisión" onPress={onReview} />
+              <Row icon="arrow.uturn.backward" label="Deshacer cambios" onPress={onRevert} />
               <Row icon="arrow.triangle.branch" label="Duplicar (fork)" onPress={onFork} />
               <Row icon="arrow.down.right.and.arrow.up.left" label="Compactar" onPress={onCompact} />
               <Row icon="trash" label="Eliminar sesión" danger last onPress={onDelete} />

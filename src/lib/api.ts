@@ -4,12 +4,23 @@ const KEY_URL = 'oc.baseUrl';
 const KEY_URLS = 'oc.baseUrls';
 const KEY_TOKEN = 'oc.token';
 
+export type TokenUsage = {
+  input?: number;
+  output?: number;
+  reasoning?: number;
+  cache?: { read?: number; write?: number };
+};
+
 export type Session = {
   id: string;
   projectID?: string;
   agent?: string;
   title?: string;
-  model?: { id?: string; providerID?: string };
+  model?: { id?: string; providerID?: string; variant?: string };
+  cost?: number;
+  tokens?: TokenUsage;
+  /** Revert preparado (si hay uno a medias). */
+  revert?: { messageID?: string; partID?: string; snapshot?: string; files?: FileDiff[] };
   time?: { created?: number; updated?: number };
 };
 
@@ -200,12 +211,32 @@ export async function redeem(link: string): Promise<string> {
 
 // ---------- mensajes ----------
 
+export type ToolContent = {
+  /** 'text' | 'file' */
+  type: string;
+  text?: string;
+  /** Para `type: 'file'`: file:///C:/… o C:/… */
+  uri?: string;
+  mime?: string;
+  name?: string | null;
+};
+
 export type Part = {
   type: string; // 'text' | 'reasoning' | 'tool' | ...
   text?: string;
   name?: string;
   id?: string;
-  state?: { status?: string; input?: Record<string, unknown>; output?: unknown };
+  executed?: boolean;
+  state?: {
+    status?: string;
+    title?: string;
+    input?: Record<string, unknown>;
+    /** Salida de la herramienta (normalmente texto). */
+    content?: ToolContent[];
+    metadata?: Record<string, unknown>;
+    output?: unknown;
+  };
+  time?: { created?: number; ran?: number; completed?: number };
 };
 
 export type Msg = {
@@ -216,6 +247,8 @@ export type Msg = {
   agent?: string;
   model?: { id?: string; providerID?: string; variant?: string };
   finish?: string;
+  cost?: number;
+  tokens?: TokenUsage;
   time?: { created?: number };
 };
 
@@ -244,11 +277,20 @@ export async function getMessages(
   return { data: res.data ?? [], cursor: res.cursor ?? { previous: null, next: null } };
 }
 
-export async function sendPrompt(sessionId: string, text: string, files?: Attachment[]) {
+export async function sendPrompt(
+  sessionId: string,
+  text: string,
+  files?: Attachment[],
+  opts?: { skills?: SkillAttachment[]; delivery?: 'steer' | 'queue' }
+) {
+  const body: Record<string, unknown> = { text };
+  if (files && files.length > 0) body.files = files;
+  if (opts?.skills && opts.skills.length > 0) body.skills = opts.skills;
+  if (opts?.delivery) body.delivery = opts.delivery;
   return request(`/api/session/${sessionId}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(files && files.length > 0 ? { text, files } : { text }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -482,6 +524,90 @@ export function maskKey(key?: string): string {
   return key.length <= 4 ? '••••' : '••••' + key.slice(-4);
 }
 
+// ---------- ficheros del PC (para el módulo Revisión) ----------
+
+/** `file:///C:/x` · `file://C:/x` · `C:/x` → `C:/x` */
+export function filePath(uri: string): string {
+  let p = uri.replace(/^file:\/\//i, '');
+  if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
+  return p;
+}
+
+/** Base y cabeceras para pedir ficheros (imágenes) al servidor. */
+export async function fileAccess(): Promise<{
+  base: string;
+  headers: Record<string, string>;
+} | null> {
+  const creds = await loadCreds();
+  if (!creds) return null;
+  return { base: creds.baseUrl, headers: { Authorization: authHeader(creds.token) } };
+}
+
+/** URL absoluta (con auth aparte) para un fichero del PC. */
+export function fileUrl(base: string, path: string): string {
+  return `${base}/api/fs/read/${path}`;
+}
+
+/** Lee un fichero del PC como texto. */
+export function readFileText(path: string): Promise<string> {
+  return request(`/api/fs/read/${path}`);
+}
+
+/**
+ * Carpeta donde el agente deja lo que quiere enseñarte (panel «Revisión»).
+ * Es la forma de que algo llegue al móvil: el escritorio tiene su propio panel.
+ */
+export const REVIEW_DIR = 'C:/Users/nixer/.opencode/review';
+
+export type DirEntry = { name: string; path: string; type: string };
+
+/** Lista una carpeta del PC (rutas absolutas). */
+export async function listDir(dir: string): Promise<FsEntry[]> {
+  const base = dir.replace(/\/+$/, '');
+  const res = await apiGet<{ data: { path: string; type: string }[] }>(
+    `/api/fs/list?path=${base.replace(/ /g, '%20')}`
+  );
+  return (res.data ?? []).map((e) => {
+    const name = e.path.split(/[\\/]/).filter(Boolean).pop() ?? e.path;
+    const abs = `${base}/${name}`;
+    return { name, path: e.path, abs, type: e.type };
+  });
+}
+
+/** Un fichero que el agente ha "enseñado" (salida de una herramienta). */
+export type ShownFile = {
+  path: string;
+  uri: string;
+  mime: string;
+  name?: string;
+  tool?: string;
+};
+
+/** Recoge los ficheros mostrados por las herramientas de una sesión. */
+export function collectShownFiles(msgs: Msg[]): ShownFile[] {
+  const out: ShownFile[] = [];
+  const seen = new Set<string>();
+  for (const m of msgs) {
+    for (const p of m.content ?? []) {
+      if (p.type !== 'tool') continue;
+      for (const c of p.state?.content ?? []) {
+        if (c.type !== 'file' || !c.uri) continue;
+        const path = filePath(c.uri);
+        if (seen.has(path)) continue;
+        seen.add(path);
+        out.push({
+          path,
+          uri: c.uri,
+          mime: c.mime ?? '',
+          name: c.name ?? undefined,
+          tool: p.name,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 // ---------- gestión del servidor: agentes, MCP, integraciones, etc. ----------
 
 export type AgentPermission = { action: string; resource: string; effect: string };
@@ -612,6 +738,313 @@ export async function createPairing(): Promise<Pairing> {
   return 'data' in json && json.data ? json.data : (json as Pairing);
 }
 
+// ---------- uso, coste y estadísticas ----------
+/** Tokens que ocupa el contexto en la última petición (lo que llena la ventana). */
+export function contextTokens(t?: TokenUsage): number {
+  if (!t) return 0;
+  return (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
+}
+
+/** Suma de todo lo gastado (entrada + salida + razonamiento + caché). */
+export function totalTokens(t?: TokenUsage): number {
+  if (!t) return 0;
+  return (
+    (t.input ?? 0) +
+    (t.output ?? 0) +
+    (t.reasoning ?? 0) +
+    (t.cache?.read ?? 0) +
+    (t.cache?.write ?? 0)
+  );
+}
+
+/** Porcentaje de contexto usado (0..100). */
+export function useContext(t?: TokenUsage, limit?: number): number {
+  if (!limit || limit <= 0) return 0;
+  return Math.min(100, (contextTokens(t) / limit) * 100);
+}
+
+/** "0,31 US$" (sin depender de Intl, que en Hermes puede no estar). */
+export function formatUSD(n?: number): string {
+  return (Math.round((n ?? 0) * 100) / 100).toFixed(2).replace('.', ',') + ' US$';
+}
+
+/** "382.716" — miles con punto. */
+export function formatNum(n?: number): string {
+  return String(Math.round(n ?? 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+/** "382,7 k" / "1,23 M". */
+export function formatTokens(n?: number): string {
+  const v = n ?? 0;
+  if (v >= 1_000_000) return (v / 1_000_000).toFixed(2).replace('.', ',') + ' M';
+  if (v >= 1_000) return (v / 1_000).toFixed(1).replace('.', ',') + ' k';
+  return String(v);
+}
+
+/** Color del semáforo del contexto. */
+export function usageColor(percent: number, ok: string, warn: string): string {
+  if (percent > 85) return '#fca5a5';
+  if (percent >= 60) return warn;
+  return ok;
+}
+
+export type StatsTools = {
+  mode?: string;
+  totals?: { calls?: number; succeeded?: number; failed?: number; unfinished?: number };
+};
+
+export type ModelUsage = {
+  model?: { id?: string; providerID?: string; variant?: string };
+  steps?: number;
+  tokens?: TokenUsage;
+  cost?: number;
+};
+
+export type ActivityDay = { date: string; steps: number };
+
+export type SessionStats = {
+  range?: { from?: number; to?: number };
+  sessions?: number;
+  subagents?: number;
+  prompts?: number;
+  steps?: number;
+  tokens?: TokenUsage;
+  cost?: number;
+  tools?: StatsTools;
+  activeDays?: number;
+  streak?: number;
+  activity?: ActivityDay[];
+  models?: ModelUsage[];
+};
+
+/** Estadísticas globales (gasto, tokens, pasos…) en un rango de tiempo. */
+export async function getSessionStats(opts?: {
+  from?: number;
+  to?: number;
+  project?: string;
+}): Promise<SessionStats | null> {
+  const parts: string[] = [];
+  if (opts?.from != null) parts.push(`from=${opts.from}`);
+  if (opts?.to != null) parts.push(`to=${opts.to}`);
+  if (opts?.project) parts.push(`project=${encodeURIComponent(opts.project)}`);
+  const q = parts.length ? `?${parts.join('&')}` : '';
+  const res = await apiGet<{ data: SessionStats } | SessionStats>(
+    `/api/experimental/session/stats${q}`
+  );
+  return 'data' in (res as object) ? ((res as { data: SessionStats }).data ?? null) : (res as SessionStats);
+}
+
+// ---------- deshacer (revert) ----------
+
+export function stageRevert(sessionId: string, messageID: string, files = true) {
+  return sessionAction(sessionId, '/revert/stage', 'POST', { messageID, files });
+}
+
+export function commitRevert(sessionId: string) {
+  return sessionAction(sessionId, '/revert/commit', 'POST', {});
+}
+
+export function clearRevert(sessionId: string) {
+  return sessionAction(sessionId, '/revert', 'DELETE');
+}
+
+// ---------- skill adjunta al prompt ----------
+
+export type SkillAttachment = { id: string };
+
+// ---------- comandos ----------
+
+export function runCommand(
+  sessionId: string,
+  name: string,
+  text = '',
+  opts?: { files?: Attachment[]; skills?: SkillAttachment[]; delivery?: 'steer' | 'queue' }
+) {
+  return sessionAction(sessionId, '/command', 'POST', {
+    name,
+    text,
+    ...(opts?.files && opts.files.length > 0 ? { files: opts.files } : {}),
+    ...(opts?.skills && opts.skills.length > 0 ? { skills: opts.skills } : {}),
+    ...(opts?.delivery ? { delivery: opts.delivery } : {}),
+  });
+}
+
+// ---------- inbox (steering: hablar sin interrumpir) ----------
+
+export type InboxItem = {
+  id: string;
+  text?: string;
+  delivery?: string;
+  status?: string;
+  time?: { created?: number; updated?: number };
+};
+
+export async function getInbox(sessionId: string): Promise<InboxItem[]> {
+  const res = await apiGet<{ data: InboxItem[] }>(`/api/session/${sessionId}/inbox`);
+  return res.data ?? [];
+}
+
+export function cancelInbox(sessionId: string, inboxId: string) {
+  return sessionAction(sessionId, `/inbox/${inboxId}`, 'DELETE');
+}
+
+export function setInboxDelivery(sessionId: string, inboxId: string, delivery: 'steer' | 'queue') {
+  return sessionAction(sessionId, `/inbox/${inboxId}`, 'PATCH', { delivery });
+}
+
+// ---------- ubicación ----------
+
+export type LocationInfo = {
+  directory?: string;
+  project?: { id?: string; directory?: string; canonical?: string };
+};
+
+export async function getLocation(): Promise<LocationInfo | null> {
+  return apiGet<LocationInfo>('/api/location');
+}
+
+// ---------- ficheros: navegar y buscar ----------
+
+export type FsEntry = { name: string; path: string; abs: string; type: string };
+
+function toAbs(location: string, rel: string): string {
+  const dir = location.replace(/\\/g, '/').replace(/\/+$/, '');
+  return `${dir}/${rel.replace(/^\/+/, '')}`;
+}
+
+/** Busca ficheros por nombre en el proyecto (o en `directory`). */
+export async function findFiles(
+  query: string,
+  opts?: { directory?: string; limit?: number }
+): Promise<{ location: string; entries: FsEntry[] }> {
+  const parts = [`query=${encodeURIComponent(query)}`, `limit=${opts?.limit ?? 40}`];
+  if (opts?.directory) parts.push(`location[directory]=${encodeURIComponent(opts.directory)}`);
+  const res = await apiGet<{
+    location?: { directory?: string };
+    data: { path: string; type: string }[];
+  }>(`/api/fs/find?${parts.join('&')}`);
+  const loc = res.location?.directory ?? '';
+  const entries = (res.data ?? []).map((e) => {
+    const name = e.path.split(/[\\/]/).filter(Boolean).pop() ?? e.path;
+    return { name, path: e.path, abs: toAbs(loc, e.path), type: e.type };
+  });
+  return { location: loc, entries };
+}
+
+// ---------- git (VCS) ----------
+
+export type VcsStatus = { path?: string; status?: string; staged?: string };
+export type VcsBranch = { name?: string; current?: boolean };
+
+function withLoc(path: string, directory?: string): string {
+  return directory ? `${path}?location[directory]=${encodeURIComponent(directory)}` : path;
+}
+
+export async function getVcsStatus(directory?: string): Promise<VcsStatus[]> {
+  const res = await apiGet<{ data: VcsStatus[] }>(withLoc('/api/vcs/status', directory));
+  return res.data ?? [];
+}
+
+export async function getVcsBranches(directory?: string): Promise<VcsBranch[]> {
+  const res = await apiGet<{ data: VcsBranch[] }>(withLoc('/api/vcs/branch', directory));
+  return res.data ?? [];
+}
+
+export async function getVcsDiff(directory?: string): Promise<FileDiff[]> {
+  const res = await apiGet<{ data: FileDiff[] }>(withLoc('/api/vcs/diff', directory));
+  return res.data ?? [];
+}
+
+export function vcsInit(directory?: string) {
+  return request(withLoc('/api/vcs/init', directory), { method: 'POST' });
+}
+
+// ---------- worktrees ----------
+
+export type Worktree = { directory?: string; branch?: string; name?: string; projectID?: string };
+
+export async function getWorktrees(projectID?: string): Promise<Worktree[]> {
+  const q = projectID ? `?projectID=${encodeURIComponent(projectID)}` : '';
+  const res = await apiGet<{ data: Worktree[] }>(`/api/worktree${q}`);
+  return res.data ?? [];
+}
+
+export function refreshWorktrees(projectID: string) {
+  return request('/api/worktree/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectID }),
+  });
+}
+
+/** Crea un worktree (copia del proyecto en otra rama). */
+export function createWorktree(
+  projectID: string,
+  opts?: { branch?: string; from?: string; name?: string; directory?: string }
+) {
+  return request('/api/worktree', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectID, ...opts }),
+  });
+}
+
+export function removeWorktree(projectID: string, directory: string, force = false) {
+  return request('/api/worktree', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectID, directory, force }),
+  });
+}
+
+// ---------- shells ----------
+
+export type ShellInfo = {
+  id: string;
+  status?: string;
+  command?: string;
+  cwd?: string;
+  output?: string;
+  /** Fichero con la salida completa (se puede leer con /api/fs/read). */
+  file?: string;
+  time?: { started?: number; completed?: number };
+};
+
+export async function getShells(directory?: string): Promise<ShellInfo[]> {
+  const res = await apiGet<{ data: ShellInfo[] }>(withLoc('/api/shell', directory));
+  return res.data ?? [];
+}
+
+export async function getShell(id: string, directory?: string): Promise<ShellInfo | null> {
+  const res = await apiGet<{ data: ShellInfo }>(withLoc(`/api/shell/${id}`, directory));
+  return res.data ?? null;
+}
+
+export function removeShell(id: string, directory?: string) {
+  return request(withLoc(`/api/shell/${id}`, directory), { method: 'DELETE' });
+}
+
+// ---------- terminal (PTY) ----------
+
+export type PtyInfo = { id: string; title?: string; command?: string; status?: string };
+
+export async function getPtys(directory?: string): Promise<PtyInfo[]> {
+  const res = await apiGet<{ data: PtyInfo[] }>(withLoc('/api/pty', directory));
+  return res.data ?? [];
+}
+
+export function createPty(opts?: { command?: string; cwd?: string; title?: string }) {
+  return request('/api/pty', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts ?? {}),
+  });
+}
+
+export function removePty(id: string) {
+  return request(`/api/pty/${id}`, { method: 'DELETE' });
+}
+
 // ---------- formularios (questions) ----------
 
 export type FormOption = { value: string; label: string; description?: string };
@@ -683,6 +1116,12 @@ export async function getProjects(): Promise<Project[]> {
 export async function getSessions(): Promise<Session[]> {
   const res = await apiGet<{ data: Session[] }>('/api/session');
   return res.data ?? [];
+}
+
+/** Una sesión concreta (trae `cost` y `tokens` acumulados). */
+export async function getSession(id: string): Promise<Session | null> {
+  const res = await apiGet<{ data: Session } | Session>(`/api/session/${id}`);
+  return 'data' in (res as object) ? ((res as { data: Session }).data ?? null) : (res as Session);
 }
 
 export async function createSession(

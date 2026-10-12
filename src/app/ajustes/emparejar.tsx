@@ -3,6 +3,7 @@ import { SymbolView } from 'expo-symbols';
 import { Stack } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import QRCode from 'react-native-qrcode-svg';
 
 import { createPairing, getKnownUrls } from '@/lib/api';
 import { haptic } from '@/lib/haptics';
@@ -119,6 +120,12 @@ export default function EmparejarScreen() {
 
       {link ? (
         <>
+          {!expired ? (
+            <View style={s.qrWrap}>
+              <QRCode value={link} size={190} backgroundColor="#ffffff" color="#0b0b0f" />
+            </View>
+          ) : null}
+
           <Text style={s.label}>Enlace de emparejamiento</Text>
           <View style={s.linkBox}>
             <Text style={s.linkText} selectable>
@@ -165,6 +172,13 @@ const makeStyles = (t: Palette) =>
     content: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 30 },
     intro: { color: t.textSoft, fontSize: 13, lineHeight: 19, marginBottom: 16 },
     label: { color: t.dim, fontSize: 12, marginBottom: 6, marginTop: 14 },
+    qrWrap: {
+      alignSelf: 'center',
+      backgroundColor: '#ffffff',
+      borderRadius: 16,
+      padding: 14,
+      marginTop: 18,
+    },
     chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
     chip: {
       borderWidth: StyleSheet.hairlineWidth,

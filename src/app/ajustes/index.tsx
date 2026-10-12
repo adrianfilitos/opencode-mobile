@@ -58,6 +58,13 @@ export default function AjustesMenu() {
 
       <Text style={s.section}>OpenCode · servidor</Text>
       <SettingsRow
+        icon="chart.bar"
+        title="Estadísticas"
+        subtitle="Gasto, tokens y actividad por día"
+        chevron
+        onPress={() => router.push('/ajustes/estadisticas' as never)}
+      />
+      <SettingsRow
         icon="key"
         title="Proveedores y claves"
         subtitle="Qué hay conectado y con qué clave"
@@ -135,7 +142,44 @@ export default function AjustesMenu() {
         onPress={() => router.push('/ajustes/emparejar' as never)}
       />
 
+      <Text style={s.section}>OpenCode · herramientas</Text>
+      <SettingsRow
+        icon="folder"
+        title="Ficheros"
+        subtitle="Explorar y buscar en el proyecto"
+        chevron
+        onPress={() => router.push('/ficheros' as never)}
+      />
+      <SettingsRow
+        icon="arrow.triangle.branch"
+        title="Git"
+        subtitle="Rama, estado y diff"
+        chevron
+        onPress={() => router.push('/git' as never)}
+      />
+      <SettingsRow
+        icon="arrow.triangle.branch"
+        title="Worktrees"
+        subtitle="Copias del proyecto en paralelo"
+        chevron
+        onPress={() => router.push('/worktrees' as never)}
+      />
+      <SettingsRow
+        icon="terminal"
+        title="Shells"
+        subtitle="Comandos lanzados y su salida"
+        chevron
+        onPress={() => router.push('/shells' as never)}
+      />
+
       <Text style={s.section}>App</Text>
+      <SettingsRow
+        icon="bell.badge"
+        title="Avisos"
+        subtitle="Probar las notificaciones ntfy"
+        chevron
+        onPress={() => router.push('/ajustes/avisos' as never)}
+      />
       <SettingsRow
         icon="info.circle"
         title="Acerca de"

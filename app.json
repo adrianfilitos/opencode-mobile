@@ -7,6 +7,14 @@
     "icon": "./assets/images/icon.png",
     "scheme": "opencode",
     "userInterfaceStyle": "dark",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b2103da5-70a2-40e9-862b-efbdbc3ba404",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 3000
+    },
     "ios": {
       "icon": "./assets/images/icon.png",
       "bundleIdentifier": "com.nixer.opencode",
@@ -36,12 +44,16 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#0d0d10",
+        "backgroundColor": "#0b0b0f",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "output": "static",
@@ -52,9 +64,9 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#0d0d10",
+          "backgroundColor": "#0b0b0f",
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "imageWidth": 120
         }
       ],
       "expo-secure-store",
@@ -75,6 +87,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "b2103da5-70a2-40e9-862b-efbdbc3ba404"
+      }
+    },
+    "owner": "klnixerdev"
   }
 }

@@ -1,7 +1,7 @@
 import * as Clipboard from 'expo-clipboard';
 import { SymbolView } from 'expo-symbols';
-import { useMemo, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState, type ReactNode } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 
 import { haptic } from '@/lib/haptics';
@@ -73,8 +73,14 @@ export default function Md({ children }: { children: string }) {
       code_inline: (node: { key: string; content?: string }) => (
         <InlineCode key={node.key} code={node.content ?? ''} />
       ),
+      // Las tablas anchas se salían de la pantalla: ahora se pueden deslizar.
+      table: (node: { key: string }, children: ReactNode) => (
+        <ScrollView key={node.key} horizontal showsHorizontalScrollIndicator={false}>
+          <View style={styles.table}>{children}</View>
+        </ScrollView>
+      ),
     }),
-    []
+    [styles]
   );
 
   return (
