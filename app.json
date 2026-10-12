@@ -1,0 +1,80 @@
+{
+  "expo": {
+    "name": "OpenCode",
+    "slug": "opencode-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "opencode",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "icon": "./assets/images/icon.png",
+      "bundleIdentifier": "com.nixer.opencode",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        },
+        "UIApplicationShortcutItems": [
+          {
+            "UIApplicationShortcutItemType": "opencode.nueva",
+            "UIApplicationShortcutItemTitle": "Nueva sesión",
+            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeAdd"
+          },
+          {
+            "UIApplicationShortcutItemType": "opencode.escanear",
+            "UIApplicationShortcutItemTitle": "Escanear QR",
+            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeCapturePhoto"
+          },
+          {
+            "UIApplicationShortcutItemType": "opencode.ajustes",
+            "UIApplicationShortcutItemTitle": "Ajustes",
+            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeSettings"
+          }
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0d0d10",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0d0d10",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 76
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "OpenCode necesita la cámara para escanear el código QR de emparejamiento."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "OpenCode necesita ver tus fotos para adjuntarlas al agente.",
+          "cameraPermission": "OpenCode necesita la cámara para hacer una foto y adjuntarla."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

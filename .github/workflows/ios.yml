@@ -1,0 +1,98 @@
+name: iOS · IPA sin firmar
+
+# Genera un IPA SIN FIRMAR para instalarlo luego con AltStore (Apple ID gratis).
+# GitHub nos deja un Mac en la nube: es lo que Windows no puede hacer.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Rama o etiqueta a compilar
+        required: false
+        default: main
+  push:
+    branches: [main]
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Versiones (para diagnosticar)
+        run: |
+          echo "--- Xcode ---"
+          xcodebuild -version
+          echo "--- Ruby / CocoaPods ---"
+          ruby -v
+          pod --version
+          echo "--- Node ---"
+          node -v && npm -v
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Generar el proyecto iOS (prebuild)
+        run: npx expo prebuild --platform ios --clean
+
+      - name: CocoaPods
+        run: |
+          cd ios
+          pod install
+
+      - name: Averiguar el esquema de Xcode
+        id: scheme
+        run: |
+          cd ios
+          SCHEME=$(xcodebuild -workspace *.xcworkspace -list -json \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).workspace.schemes[0]))")
+          echo "Esquema detectado: $SCHEME"
+          test -n "$SCHEME"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+
+      - name: Compilar sin firmar
+        run: |
+          set -o pipefail
+          cd ios
+          xcodebuild \
+            -workspace *.xcworkspace \
+            -scheme "${{ steps.scheme.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -archivePath build/app.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            2>&1 | tail -120
+
+      - name: Empaquetar el IPA
+        run: |
+          set -euo pipefail
+          rm -rf Payload
+          mkdir -p Payload
+          APP=$(ls -d ios/build/app.xcarchive/Products/Applications/*.app | head -1)
+          echo "App: $APP"
+          cp -R "$APP" Payload/
+          zip -qry OpenCode-unsigned.ipa Payload
+          ls -lh OpenCode-unsigned.ipa
+          echo "--- contenido ---"
+          unzip -l OpenCode-unsigned.ipa | head -20
+
+      - name: Subir el IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenCode-unsigned-ipa
+          path: OpenCode-unsigned.ipa
+          retention-days: 7

@@ -1,0 +1,1095 @@
+import { useRouter } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Animated,
+  Easing,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  PanResponder,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import Drawer from '@/components/drawer';
+import Md from '@/components/md';
+import ModelPicker from '@/components/model-picker';
+import QuickActions from '@/components/quick-actions';
+import SessionMenu from '@/components/session-menu';
+import Sheet, { SheetPeek } from '@/components/sheet';
+import {
+  compactSession,
+  deleteSession,
+  forkSession,
+  getMessages,
+  getPermissions,
+  getSessionDiff,
+  interruptSession,
+  renameSession,
+  replyPermission,
+  sendPrompt,
+  setSessionModel,
+  type FileDiff,
+  type Msg,
+  type Part,
+  type PermissionRequest,
+} from '@/lib/api';
+import { pickFiles, pickImages, takePhoto, type Picked } from '@/lib/attachments';
+import { subscribeEvents, useConnection, type ConnState } from '@/lib/events';
+import { haptic } from '@/lib/haptics';
+import { usePrefs } from '@/lib/prefs';
+import type { Palette } from '@/theme/palettes';
+import { usePalette, useTheme } from '@/theme/theme';
+
+const PAGE = 40;
+
+function useStyles() {
+  const t = usePalette();
+  return useMemo(() => makeStyles(t), [t]);
+}
+
+function Sym({ name, size = 16, color }: { name: string; size?: number; color?: string }) {
+  const t = usePalette();
+  return <SymbolView name={name as never} tintColor={color ?? t.text} size={size} />;
+}
+
+/** Tres puntos que rebotan, mientras el agente piensa. */
+function Dot({ delay, color }: { delay: number; color: string }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.delay(delay),
+        Animated.timing(v, { toValue: 1, duration: 320, useNativeDriver: true }),
+        Animated.timing(v, { toValue: 0, duration: 320, useNativeDriver: true }),
+        Animated.delay(560 - delay),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [v, delay]);
+  return (
+    <Animated.View
+      style={{
+        width: 7,
+        height: 7,
+        borderRadius: 4,
+        backgroundColor: color,
+        opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }),
+        transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [0, -4] }) }],
+      }}
+    />
+  );
+}
+
+/** Ruedecita girando (herramienta en curso). */
+function Spinner({ color }: { color: string }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(v, { toValue: 1, duration: 900, easing: Easing.linear, useNativeDriver: true })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [v]);
+  return (
+    <Animated.View
+      style={{
+        width: 13,
+        height: 13,
+        borderRadius: 7,
+        borderWidth: 2,
+        borderColor: color,
+        borderTopColor: 'transparent',
+        transform: [
+          { rotate: v.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] }) },
+        ],
+      }}
+    />
+  );
+}
+
+/** Un check que aparece con un pequeño rebote. */
+function CheckMark({ color }: { color: string }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.spring(v, { toValue: 1, useNativeDriver: true, bounciness: 12, speed: 18 }).start();
+  }, [v]);
+  return (
+    <Animated.View style={{ opacity: v, transform: [{ scale: v }] }}>
+      <Sym name="checkmark" size={13} color={color} />
+    </Animated.View>
+  );
+}
+
+const CONN_COLOR: Record<ConnState, string> = { online: '#4ade80', connecting: '#fbbf24', offline: '#fca5a5' };
+const CONN_LABEL: Record<ConnState, string> = {
+  online: 'conectado',
+  connecting: 'conectando…',
+  offline: 'sin conexión',
+};
+
+function Header({
+  title,
+  conn,
+  onMenu,
+  onMore,
+}: {
+  title: string;
+  conn: ConnState;
+  onMenu: () => void;
+  onMore: () => void;
+}) {
+  const s = useStyles();
+  const t = usePalette();
+  return (
+    <View style={s.header}>
+      <Pressable hitSlop={10} onPress={onMenu}>
+        <Sym name="line.3.horizontal" size={20} color={t.dim} />
+      </Pressable>
+      <Text style={s.title} numberOfLines={1}>
+        {title}
+      </Text>
+      <Pressable hitSlop={8} style={s.conn} onPress={() => {}}>
+        <View style={[s.connDot, { backgroundColor: CONN_COLOR[conn] }]} />
+        <Text style={s.connText}>{CONN_LABEL[conn]}</Text>
+      </Pressable>
+      <View style={{ flex: 1 }} />
+      <Pressable hitSlop={10} onPress={onMore}>
+        <Sym name="ellipsis" size={18} color={t.dim} />
+      </Pressable>
+    </View>
+  );
+}
+
+function ModelBar({
+  model,
+  reasoning,
+  onPress,
+}: {
+  model?: string;
+  reasoning?: string;
+  onPress?: () => void;
+}) {
+  const s = useStyles();
+  const t = usePalette();
+  const [pressed, setPressed] = useState(false);
+  const variantLabel =
+    reasoning === 'low' ? 'Bajo' : reasoning === 'medium' ? 'Medio' : reasoning === 'high' ? 'Alto' : '—';
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => setPressed(true)}
+      onPressOut={() => setPressed(false)}
+      style={[s.modelBar, pressed && { backgroundColor: t.panel2 }]}>
+      <View style={s.modelTop}>
+        <Sym name="cpu" size={14} color={t.dim} />
+        <View style={s.pill}>
+          <Text style={s.pillText}>{model ?? 'sin sesión'}</Text>
+        </View>
+      </View>
+      <View style={s.modelBottom}>
+        <Sym name="sparkles" size={12} color={t.dim} />
+        <Text style={s.modelBottomText}>
+          Razonamiento <Text style={s.modelBottomValue}>{variantLabel}</Text>
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function ToolRow({ part }: { part: Part }) {
+  const s = useStyles();
+  const t = usePalette();
+  const status = part.state?.status;
+  const done = status === 'completed' || status === 'success';
+  const failed = status === 'error' || status === 'failed';
+  const v = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(v, { toValue: 1, duration: 300, useNativeDriver: true }).start();
+  }, [v]);
+
+  return (
+    <Animated.View
+      style={[
+        s.toolRow,
+        {
+          opacity: v,
+          transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }],
+        },
+      ]}>
+      <Sym name="wrench.and.screwdriver" size={13} color={t.dim} />
+      <Text style={s.toolText}>
+        {part.name}
+        {typeof part.state?.input?.command === 'string'
+          ? ` · ${(part.state.input.command as string).slice(0, 40)}`
+          : ''}
+      </Text>
+      <View style={{ flex: 1 }} />
+      {failed ? (
+        <Sym name="xmark" size={13} color="#fca5a5" />
+      ) : done ? (
+        <CheckMark color={t.ok} />
+      ) : (
+        <Spinner color={t.dim} />
+      )}
+    </Animated.View>
+  );
+}
+
+function AssistantBlock({ msg, showHead }: { msg: Msg; showHead: boolean }) {
+  const s = useStyles();
+  const parts = (msg.content ?? []).filter(
+    (p) => (p.type === 'text' && p.text && p.text.trim()) || p.type === 'tool'
+  );
+  if (parts.length === 0) return null;
+  return (
+    <View>
+      {showHead ? (
+        <View style={s.roleHead}>
+          <View style={s.dot} />
+          <Text style={s.roleText}>
+            {msg.agent ?? 'agente'}
+            {msg.model?.id ? ` · ${msg.model.id}` : ''}
+          </Text>
+        </View>
+      ) : null}
+      {parts.map((p, i) => {
+        if (p.type === 'text' && p.text) return <Md key={i}>{p.text}</Md>;
+        if (p.type === 'tool') return <ToolRow key={i} part={p} />;
+        return null;
+      })}
+    </View>
+  );
+}
+
+function PermissionCard({
+  perms,
+  onReply,
+}: {
+  perms: PermissionRequest[];
+  onReply: (req: PermissionRequest, d: 'once' | 'always' | 'reject') => void;
+}) {
+  const s = useStyles();
+  const t = usePalette();
+  const req = perms[0];
+  return (
+    <View style={s.permCard}>
+      <Text style={s.permTitle}>
+        {perms.length > 1 ? `⚠ ${perms.length} permisos pendientes` : '⚠ Permiso requerido'}
+      </Text>
+      <Text style={s.permAction} numberOfLines={2}>
+        {req.message?.trim() || req.action}
+      </Text>
+      {req.resources && req.resources.length > 0 ? (
+        <Text style={s.permRes} numberOfLines={2}>
+          {req.resources.join(' · ')}
+        </Text>
+      ) : null}
+      <View style={s.permButtons}>
+        <Pressable
+          style={[s.permPrimary, { backgroundColor: t.accent }]}
+          onPress={() => onReply(req, 'once')}>
+          <Text style={s.permPrimaryText}>Permitir</Text>
+        </Pressable>
+        <Pressable style={s.permAlt} onPress={() => onReply(req, 'always')}>
+          <Text style={s.permAltText}>Siempre</Text>
+        </Pressable>
+        <Pressable style={s.permGhost} onPress={() => onReply(req, 'reject')}>
+          <Text style={s.permGhostText}>No</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function EmptyState() {
+  const s = useStyles();
+  return (
+    <View style={s.empty}>
+      <View style={s.emptyIcon}>
+        <Sym name="bubble.left.and.text.bubble.right" size={26} color="#5f5f6b" />
+      </View>
+      <Text style={s.emptyTitle}>Elige una sesión</Text>
+      <Text style={s.emptySub}>Abre el ☰ y toca una de tus sesiones del PC.</Text>
+    </View>
+  );
+}
+
+/** Menú para elegir de dónde sacar el adjunto. */
+function AttachMenu({
+  open,
+  busy,
+  onClose,
+  onPick,
+}: {
+  open: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onPick: (kind: 'camera' | 'library' | 'file') => void;
+}) {
+  const s = useStyles();
+  const t = usePalette();
+  const rows: { kind: 'camera' | 'library' | 'file'; icon: string; label: string; sub: string }[] = [
+    { kind: 'camera', icon: 'camera', label: 'Hacer una foto', sub: 'con la cámara' },
+    { kind: 'library', icon: 'photo.on.rectangle', label: 'Elegir foto', sub: 'de tu galería (hasta 4)' },
+    { kind: 'file', icon: 'doc', label: 'Elegir archivo', sub: 'texto, código, PDF…' },
+  ];
+  return (
+    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={s.modalRoot}>
+        <Pressable style={s.modalScrim} onPress={onClose} />
+        <View style={s.modalCard}>
+          <Text style={s.modalTitle}>Adjuntar</Text>
+          {busy ? (
+            <View style={s.attachBusy}>
+              <ActivityIndicator color={t.accent} />
+              <Text style={s.attachBusyText}>Preparando el archivo…</Text>
+            </View>
+          ) : (
+            rows.map((r) => (
+              <Pressable key={r.kind} style={s.modalRow} onPress={() => onPick(r.kind)}>
+                <Sym name={r.icon} size={16} color={t.dim} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.modalRowTitle}>{r.label}</Text>
+                  <Text style={s.modalRowSub}>{r.sub}</Text>
+                </View>
+                <Sym name="chevron.right" size={13} color={t.dimSoft} />
+              </Pressable>
+            ))
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+export default function ChatView({ sessionId, title }: { sessionId?: string; title?: string }) {
+  const s = useStyles();
+  const t = usePalette();
+  const { density, flat } = useTheme();
+  const { prefs } = usePrefs();
+  const conn = useConnection();
+  const gap = density === 'compact' ? 6 : density === 'spacious' ? 18 : 12;
+  const radius = density === 'compact' ? 12 : density === 'spacious' ? 20 : 16;
+  const router = useRouter();
+
+  const [draft, setDraft] = useState('');
+  const [menu, setMenu] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [sessionMenu, setSessionMenu] = useState(false);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attBusy, setAttBusy] = useState(false);
+  const [att, setAtt] = useState<Picked[]>([]);
+
+  const [page, setPage] = useState<Msg[]>([]); // últimos mensajes (orden ascendente)
+  const [older, setOlder] = useState<Msg[]>([]); // páginas antiguas ya cargadas
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const [perms, setPerms] = useState<PermissionRequest[]>([]);
+  const [diff, setDiff] = useState<FileDiff[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [stream, setStream] = useState<{ id: string; text: string } | null>(null);
+  const [thinking, setThinking] = useState(false);
+
+  const scroller = useRef<ScrollView>(null);
+  const poll = useRef<ReturnType<typeof setInterval> | null>(null);
+  const suppressScroll = useRef(false);
+
+  // Deslizar hacia la derecha desde el borde izquierdo abre el menú ☰
+  const swipe = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_e, g) => g.x0 < 44 && g.dx > 14 && Math.abs(g.dy) < 34,
+      onPanResponderRelease: (_e, g) => {
+        if (g.dx > 60) {
+          haptic('tap');
+          setMenu(true);
+        }
+      },
+    })
+  ).current;
+
+  /** Trae la página más reciente y actualiza permisos y diff. */
+  const load = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const first = await getMessages(sessionId, { limit: PAGE, order: 'desc' });
+      setPage([...first.data].reverse());
+      setCursor((prev) => prev ?? first.cursor.next ?? null);
+      setHasMore((prev) => prev || !!first.cursor.next);
+      try {
+        setPerms(await getPermissions(sessionId));
+      } catch {
+        setPerms([]);
+      }
+      try {
+        setDiff(await getSessionDiff(sessionId));
+      } catch {
+        setDiff([]);
+      }
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId]);
+
+  /** Al cambiar de sesión: todo a cero. */
+  useEffect(() => {
+    if (!sessionId) return;
+    setPage([]);
+    setOlder([]);
+    setCursor(null);
+    setHasMore(false);
+    setAtt([]);
+    setLoading(true);
+    load();
+    poll.current = setInterval(load, 8000);
+    return () => {
+      if (poll.current) clearInterval(poll.current);
+    };
+  }, [sessionId, load]);
+
+  const loadMore = useCallback(async () => {
+    if (!sessionId || !cursor || loadingMore) return;
+    setLoadingMore(true);
+    suppressScroll.current = true;
+    try {
+      const prev = await getMessages(sessionId, { limit: PAGE, cursor });
+      setOlder((list) => [...[...prev.data].reverse(), ...list]);
+      setCursor(prev.cursor.next ?? null);
+      setHasMore(!!prev.cursor.next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [sessionId, cursor, loadingMore]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        load();
+      }, 300);
+    };
+
+    const unsub = subscribeEvents((e) => {
+      const d = e.data;
+      if (d?.sessionID && d.sessionID !== sessionId) return;
+      switch (e.type) {
+        case 'session.text.started':
+          setStream({ id: d?.assistantMessageID ?? 'stream', text: '' });
+          break;
+        case 'session.text.delta':
+          if (typeof d?.delta === 'string') {
+            const id = d?.assistantMessageID ?? 'stream';
+            setStream((p) => ({ id, text: (p && p.id === id ? p.text : '') + d?.delta }));
+          }
+          break;
+        case 'session.reasoning.started':
+          setThinking(true);
+          break;
+        case 'session.reasoning.ended':
+          setThinking(false);
+          break;
+        case 'session.text.ended':
+          setThinking(false);
+          schedule();
+          break;
+        case 'session.execution.succeeded':
+        case 'session.execution.failed':
+          setThinking(false);
+          setStream(null);
+          schedule();
+          break;
+        default:
+          schedule();
+      }
+    });
+
+    return () => {
+      unsub();
+      if (timer) clearTimeout(timer);
+    };
+  }, [sessionId, load]);
+
+  /** Si vuelve la conexión, refrescamos. */
+  useEffect(() => {
+    if (conn === 'online') load();
+  }, [conn, load]);
+
+  const msgs = useMemo(() => {
+    const ids = new Set(page.map((m) => m.id));
+    return [...older.filter((m) => !ids.has(m.id)), ...page];
+  }, [older, page]);
+
+  const info = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const mm = msgs[i].model;
+      if (mm?.id) return { model: mm.id, variant: mm.variant };
+    }
+    return { model: undefined, variant: undefined };
+  }, [msgs]);
+
+  const working = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.type === 'user') return true;
+      if (m.type === 'assistant') return !m.finish;
+    }
+    return false;
+  }, [msgs]);
+
+  const tools = useMemo(
+    () => msgs.flatMap((m) => m.content ?? []).filter((p) => p.type === 'tool'),
+    [msgs]
+  );
+
+  const busy = working || !!stream?.text || thinking;
+  const canSend = !!sessionId && (draft.trim().length > 0 || att.length > 0) && !sending;
+
+  async function stop() {
+    if (!sessionId) return;
+    haptic('tap');
+    try {
+      await interruptSession(sessionId);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function send() {
+    if (!sessionId || !canSend) return;
+    const text = draft.trim() || 'Mira el adjunto.';
+    setDraft('');
+    setAtt([]);
+    setSending(true);
+    haptic('tap');
+    try {
+      await sendPrompt(sessionId, text, att.map(({ uri, name }) => ({ uri, name })));
+      await load();
+    } catch (e) {
+      haptic('error');
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function addAttachment(kind: 'camera' | 'library' | 'file') {
+    setAttachOpen(false);
+    setAttBusy(true);
+    try {
+      const picked =
+        kind === 'camera' ? await takePhoto() : kind === 'library' ? await pickImages() : await pickFiles();
+      if (picked.length > 0) {
+        setAtt((list) => [...list, ...picked].slice(0, 6));
+        haptic('select');
+      }
+    } catch (e) {
+      haptic('error');
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAttBusy(false);
+    }
+  }
+
+  return (
+    <SafeAreaView style={s.safe} edges={['top', 'bottom']} {...swipe.panHandlers}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <Header
+          title={title ?? 'OpenCode'}
+          conn={conn}
+          onMenu={() => {
+            haptic('tap');
+            setMenu(true);
+          }}
+          onMore={() => sessionId && setSessionMenu(true)}
+        />
+        <ModelBar model={info.model} reasoning={info.variant} onPress={() => sessionId && setPickerOpen(true)} />
+
+        {sessionId ? (
+          <ScrollView
+            ref={scroller}
+            style={{ flex: 1 }}
+            contentContainerStyle={[s.thread, { gap }]}
+            keyboardDismissMode="interactive"
+            maintainVisibleContentPosition={older.length > 0 ? { minIndexForVisible: 1 } : undefined}
+            onContentSizeChange={() => {
+              if (suppressScroll.current) {
+                suppressScroll.current = false;
+                return;
+              }
+              scroller.current?.scrollToEnd({ animated: false });
+            }}>
+            {error ? <Text style={s.error}>{error}</Text> : null}
+            {loading && page.length === 0 ? <ActivityIndicator color={t.accent} /> : null}
+
+            {hasMore ? (
+              <Pressable style={s.moreBtn} onPress={loadMore} disabled={loadingMore}>
+                <Text style={s.moreText}>
+                  {loadingMore ? 'cargando…' : '↑ Ver mensajes anteriores'}
+                </Text>
+              </Pressable>
+            ) : null}
+
+            {msgs.map((m, idx) => {
+              if (m.type === 'user') {
+                return (
+                  <View key={m.id} style={s.userRow}>
+                    {flat ? (
+                      <Text style={[s.flatText, { color: t.accent }]}>{m.text}</Text>
+                    ) : (
+                      <View style={[s.bubble, { backgroundColor: t.accent, borderRadius: radius }]}>
+                        <Text style={[s.bubbleText, { color: t.ink }]}>{m.text}</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              }
+              if (m.type === 'assistant') {
+                const prev = msgs[idx - 1];
+                const showHead = !prev || prev.type !== 'assistant';
+                return <AssistantBlock key={m.id} msg={m} showHead={showHead} />;
+              }
+              return null;
+            })}
+
+            {stream && stream.text ? (
+              <View>
+                <View style={s.roleHead}>
+                  <View style={s.dot} />
+                  <Text style={s.roleText}>{info.model ?? 'agente'}</Text>
+                </View>
+                <Md>{stream.text + ' ▍'}</Md>
+              </View>
+            ) : thinking ? (
+              <View>
+                <View style={s.roleHead}>
+                  <View style={s.dot} />
+                  <Text style={s.roleText}>{info.model ?? 'agente'}</Text>
+                </View>
+                <View style={s.thinkingRow}>
+                  <Dot delay={0} color={t.dim} />
+                  <Dot delay={160} color={t.dim} />
+                  <Dot delay={320} color={t.dim} />
+                  <Text style={s.thinking}>pensando</Text>
+                </View>
+              </View>
+            ) : null}
+          </ScrollView>
+        ) : (
+          <EmptyState />
+        )}
+
+        {sessionId && perms.length > 0 ? (
+          <PermissionCard
+            perms={perms}
+            onReply={async (req, decision) => {
+              haptic(decision === 'reject' ? 'warning' : 'success');
+              try {
+                await replyPermission(sessionId, req.id, decision);
+                setPerms((p) => p.filter((x) => x.id !== req.id));
+                load();
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+              }
+            }}
+          />
+        ) : null}
+
+        {sessionId ? (
+          <QuickActions
+            actions={prefs.quickActions}
+            onPick={(a) => {
+              haptic('select');
+              setDraft((d) => (d.trim() ? `${d.trim()}\n${a.text}` : a.text));
+            }}
+            onEdit={() => router.push('/ajustes/rapidas' as never)}
+          />
+        ) : null}
+
+        {sessionId ? (
+          <View style={s.composerWrap}>
+            {att.length > 0 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.attRow}>
+                {att.map((a, i) => (
+                  <View key={`${a.name}-${i}`} style={s.attChip}>
+                    {a.kind === 'image' ? (
+                      <Image source={{ uri: a.uri }} style={s.attThumb} />
+                    ) : (
+                      <Sym name="doc" size={14} color={t.dim} />
+                    )}
+                    <Text style={s.attName} numberOfLines={1}>
+                      {a.name}
+                    </Text>
+                    <Pressable
+                      hitSlop={8}
+                      onPress={() => {
+                        haptic('tap');
+                        setAtt((list) => list.filter((_, idx) => idx !== i));
+                      }}>
+                      <Sym name="xmark.circle.fill" size={15} color={t.dimSoft} />
+                    </Pressable>
+                  </View>
+                ))}
+              </ScrollView>
+            ) : null}
+
+            <View style={s.composer}>
+              <TextInput
+                style={s.input}
+                placeholder="Escribe…"
+                placeholderTextColor={t.dim}
+                value={draft}
+                onChangeText={setDraft}
+                multiline
+              />
+              <Pressable
+                style={s.iconBtn}
+                onPress={() => {
+                  haptic('tap');
+                  setAttachOpen(true);
+                }}>
+                {attBusy ? (
+                  <ActivityIndicator size="small" color={t.dim} />
+                ) : (
+                  <Sym name="paperclip" size={16} color={att.length > 0 ? t.accent : t.textSoft} />
+                )}
+              </Pressable>
+              <Pressable
+                style={[
+                  s.iconBtn,
+                  { backgroundColor: t.accent, borderColor: t.accent },
+                  (!busy && !canSend) || sending ? { opacity: 0.5 } : null,
+                ]}
+                onPress={busy ? stop : send}
+                disabled={sending || (!busy && !canSend)}>
+                <Sym name={busy ? 'stop.fill' : 'arrow.up'} size={15} color={t.ink} />
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        <SheetPeek
+          onPress={() => setSheetOpen(true)}
+          counts={{ diff: diff.length, tools: tools.length, perm: perms.length }}
+        />
+      </KeyboardAvoidingView>
+
+      <Drawer open={menu} onClose={() => setMenu(false)} />
+      <AttachMenu
+        open={attachOpen}
+        busy={attBusy}
+        onClose={() => setAttachOpen(false)}
+        onPick={addAttachment}
+      />
+      <ModelPicker
+        visible={pickerOpen}
+        current={info}
+        onClose={() => setPickerOpen(false)}
+        onPick={async (m, variant) => {
+          setPickerOpen(false);
+          if (!sessionId) return;
+          haptic('select');
+          try {
+            await setSessionModel(sessionId, { id: m.id, providerID: m.providerID, variant });
+            await load();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        }}
+      />
+      <SessionMenu
+        visible={sessionMenu}
+        title={title ?? 'Sesión'}
+        onClose={() => setSessionMenu(false)}
+        onRename={async (nt) => {
+          setSessionMenu(false);
+          if (!sessionId) return;
+          try {
+            await renameSession(sessionId, nt);
+            await load();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        }}
+        onFork={async () => {
+          setSessionMenu(false);
+          if (!sessionId) return;
+          try {
+            const forked = await forkSession(sessionId);
+            if (forked?.id) {
+              router.push({
+                pathname: '/sesion/[id]',
+                params: { id: forked.id, title: `${title ?? 'Sesión'} (fork)` },
+              } as never);
+            }
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        }}
+        onCompact={async () => {
+          setSessionMenu(false);
+          if (!sessionId) return;
+          try {
+            await compactSession(sessionId);
+            await load();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        }}
+        onDelete={async () => {
+          setSessionMenu(false);
+          if (!sessionId) return;
+          try {
+            await deleteSession(sessionId);
+            router.back();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        }}
+      />
+      <Sheet
+        open={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        diff={diff}
+        tools={tools}
+        perms={perms}
+        onReply={async (req, decision) => {
+          if (!sessionId) return;
+          haptic(decision === 'reject' ? 'warning' : 'success');
+          try {
+            await replyPermission(sessionId, req.id, decision);
+            setPerms((p) => p.filter((x) => x.id !== req.id));
+            load();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        }}
+      />
+    </SafeAreaView>
+  );
+}
+
+const mono = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
+
+const makeStyles = (t: Palette) =>
+  StyleSheet.create({
+    safe: { flex: 1, backgroundColor: t.bg },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+    },
+    title: { color: t.text, fontSize: 16, fontWeight: '600', maxWidth: '46%' },
+    conn: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+    connDot: { width: 7, height: 7, borderRadius: 4 },
+    connText: { color: t.dimSoft, fontSize: 10.5 },
+
+    modelBar: {
+      paddingHorizontal: 16,
+      paddingVertical: 9,
+      gap: 3,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: t.line,
+    },
+    modelTop: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+    pill: {
+      backgroundColor: t.panel2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+      borderRadius: 999,
+      paddingHorizontal: 9,
+      paddingVertical: 2,
+    },
+    pillText: { color: t.text, fontSize: 13, fontWeight: '600' },
+    modelBottom: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    modelBottomText: { color: t.dim, fontSize: 11.5 },
+    modelBottomValue: { color: t.textSoft, fontWeight: '600' },
+
+    thread: { padding: 14, gap: 12, paddingBottom: 24, flexGrow: 1, justifyContent: 'flex-end' },
+    userRow: { alignItems: 'flex-end' },
+    bubble: {
+      paddingHorizontal: 13,
+      paddingVertical: 9,
+      borderRadius: 16,
+      borderBottomRightRadius: 4,
+      maxWidth: '82%',
+    },
+    bubbleText: { fontSize: 14 },
+    flatText: { fontSize: 14, textAlign: 'right', maxWidth: '85%' },
+
+    roleHead: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 9, marginTop: 6 },
+    dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: t.ok },
+    roleText: { color: t.dim, fontSize: 12 },
+
+    moreBtn: { alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 14 },
+    moreText: { color: t.accent, fontSize: 12.5, fontWeight: '600' },
+
+    toolRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingVertical: 8,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: t.lineSoft,
+    },
+    toolText: { color: t.dim, fontSize: 12.5, flexShrink: 1 },
+
+    thinking: { color: t.dim, fontSize: 13, fontStyle: 'italic', marginLeft: 6 },
+    thinkingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 4 },
+    error: { color: '#fca5a5', fontSize: 12, marginBottom: 8 },
+
+    empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 30 },
+    emptyIcon: {
+      width: 70,
+      height: 70,
+      borderRadius: 20,
+      backgroundColor: t.panel,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    emptyTitle: { color: t.text, fontSize: 17, fontWeight: '700' },
+    emptySub: { color: t.dim, fontSize: 13, textAlign: 'center', maxWidth: 250, lineHeight: 19 },
+
+    permCard: {
+      marginHorizontal: 13,
+      marginBottom: 8,
+      backgroundColor: t.warnBg,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.warnLine,
+      borderRadius: 14,
+      padding: 12,
+    },
+    permTitle: { color: t.warn, fontSize: 13, fontWeight: '700', marginBottom: 4 },
+    permAction: { color: t.textSoft, fontSize: 13, lineHeight: 18 },
+    permRes: { color: t.warnText, fontSize: 11.5, marginTop: 4, fontFamily: mono },
+    permButtons: { flexDirection: 'row', gap: 8, marginTop: 11 },
+    permPrimary: { borderRadius: 9, paddingHorizontal: 16, paddingVertical: 9 },
+    permPrimaryText: { color: t.ink, fontSize: 12.5, fontWeight: '600' },
+    permAlt: {
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.warnLine,
+      borderRadius: 9,
+      paddingHorizontal: 16,
+      paddingVertical: 9,
+    },
+    permAltText: { color: t.warnText, fontSize: 12.5, fontWeight: '600' },
+    permGhost: {
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+      borderRadius: 9,
+      paddingHorizontal: 16,
+      paddingVertical: 9,
+    },
+    permGhostText: { color: t.dim, fontSize: 12.5, fontWeight: '600' },
+
+    composerWrap: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: t.line,
+    },
+    attRow: { gap: 8, paddingHorizontal: 13, paddingTop: 10 },
+    attChip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7,
+      backgroundColor: t.panel2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+      borderRadius: 10,
+      paddingHorizontal: 9,
+      paddingVertical: 6,
+      maxWidth: 210,
+    },
+    attThumb: { width: 22, height: 22, borderRadius: 5 },
+    attName: { color: t.textSoft, fontSize: 12, flexShrink: 1 },
+
+    composer: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      gap: 9,
+      paddingHorizontal: 13,
+      paddingVertical: 10,
+    },
+    input: {
+      flex: 1,
+      backgroundColor: t.panel2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+      borderRadius: 20,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      color: t.text,
+      fontSize: 14,
+      maxHeight: 120,
+    },
+    iconBtn: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: t.panel2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+    },
+
+    modalRoot: { flex: 1, justifyContent: 'flex-end' },
+    modalScrim: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: 'rgba(0,0,0,0.6)',
+    },
+    modalCard: {
+      backgroundColor: t.panel2,
+      borderTopLeftRadius: 18,
+      borderTopRightRadius: 18,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderColor: t.line,
+      padding: 16,
+      paddingBottom: 30,
+    },
+    modalTitle: { color: t.text, fontSize: 15, fontWeight: '700', marginBottom: 6 },
+    modalRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 11,
+      paddingVertical: 13,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: t.lineSoft,
+    },
+    modalRowTitle: { color: t.text, fontSize: 14 },
+    modalRowSub: { color: t.dimSoft, fontSize: 11, marginTop: 2 },
+    attachBusy: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 18 },
+    attachBusyText: { color: t.dim, fontSize: 13 },
+  });
