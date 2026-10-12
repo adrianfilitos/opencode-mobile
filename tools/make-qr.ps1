@@ -1,5 +1,5 @@
 # make-qr.ps1 — genera un codigo QR (PNG) para una URL, para escanearlo con el movil.
-# Uso:  powershell -File make-qr.ps1 -Url "http://192.168.1.41:49374/api/info"
+# Uso:  powershell -File make-qr.ps1 -Url "http://192.168.1.100:49374/api/info"
 param(
   [Parameter(Mandatory = $true)][string]$Url,
   [string]$Out,

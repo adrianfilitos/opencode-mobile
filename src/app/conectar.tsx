@@ -20,7 +20,7 @@ import type { Palette } from '@/theme/palettes';
 import { usePalette } from '@/theme/theme';
 import { baseUrlFromLink, redeem, saveCreds } from '@/lib/api';
 
-const DEFAULT_URL = 'http://192.168.1.41:49374';
+const DEFAULT_URL = 'http://192.168.1.100:49374';
 
 function useStyles() {
   const t = usePalette();
