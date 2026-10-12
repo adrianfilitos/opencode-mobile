@@ -15,7 +15,9 @@ on:
 
 jobs:
   ipa:
-    runs-on: macos-15
+    # OJO: debe ser Xcode 26 (Swift 6.2). El runner macos-15 trae Xcode 16.4
+    # (Swift 6.1) y expo-modules-jsi exige swift-tools-version 6.2.
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
@@ -37,6 +39,8 @@ jobs:
           pod --version
           echo "--- Node ---"
           node -v && npm -v
+          echo "--- Swift ---"
+          swift --version
 
       - name: Instalar dependencias
         run: npm ci
@@ -81,9 +85,15 @@ jobs:
             ENABLE_USER_SCRIPT_SANDBOXING=NO \
             > build.log 2>&1; then
             echo "########## ERRORES ##########"
-            grep -n -i -E "error:|fatal|The following build commands failed|Command PhaseScriptExecution" build.log | head -60 || true
-            echo "########## ULTIMAS 120 LINEAS ##########"
-            tail -120 build.log
+            grep -n -i -E "error:|fatal|The following build commands failed|Command PhaseScriptExecution" build.log | head -40 || true
+            echo "########## CONTEXTO DEL PRIMER ERROR ##########"
+            FIRST=$(grep -n -i -E "error:" build.log | head -1 | cut -d: -f1)
+            if [ -n "$FIRST" ]; then
+              START=$(( FIRST - 30 )); [ "$START" -lt 1 ] && START=1
+              sed -n "${START},$(( FIRST + 50 ))p" build.log
+            fi
+            echo "########## ULTIMAS 60 LINEAS ##########"
+            tail -60 build.log
             exit 1
           fi
           echo "OK: compilado"
