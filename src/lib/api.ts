@@ -335,7 +335,15 @@ export async function setSessionModel(
 
 // ---------- agentes ----------
 
-export type AgentInfo = { name: string; description?: string };
+export type AgentInfo = {
+  id?: string;
+  name: string;
+  description?: string;
+  /** 'primary' | 'subagent' | … */
+  mode?: string;
+  hidden?: boolean;
+  permissions?: AgentPermission[];
+};
 
 export async function getAgents(): Promise<AgentInfo[]> {
   const res = await apiGet<{ data: AgentInfo[] } | AgentInfo[]>('/api/agent');
@@ -472,6 +480,136 @@ export function pluginWhere(p: PluginInfo): string {
 export function maskKey(key?: string): string {
   if (!key) return '••••';
   return key.length <= 4 ? '••••' : '••••' + key.slice(-4);
+}
+
+// ---------- gestión del servidor: agentes, MCP, integraciones, etc. ----------
+
+export type AgentPermission = { action: string; resource: string; effect: string };
+
+export type SkillInfo = {
+  id: string;
+  name?: string;
+  description?: string;
+  path?: string;
+  content?: string;
+};
+
+export type CommandInfo = { name: string; description?: string };
+
+export type McpServer = {
+  name: string;
+  status?: { status?: string; error?: string };
+  integrationID?: string;
+};
+
+export type IntegrationMethod = { type?: string; names?: string[] };
+
+export type IntegrationConnection = {
+  id?: string;
+  label?: string;
+  methodID?: string;
+  type?: string;
+  createdAt?: number;
+};
+
+export type Integration = {
+  id: string;
+  name: string;
+  methods?: IntegrationMethod[];
+  connections?: IntegrationConnection[];
+};
+
+export type WebSearchProvider = { id: string; name?: string };
+
+export type ConfigSource = { type?: string; path?: string };
+
+export type DefaultModel = {
+  id?: string;
+  modelID?: string;
+  providerID?: string;
+  name?: string;
+  status?: string;
+  limit?: { context?: number; output?: number };
+  capabilities?: { tools?: boolean; input?: string[]; output?: string[] };
+  variants?: { id: string }[];
+  cost?: { input?: number; output?: number }[];
+};
+
+export type Pairing = { code: string; expires_in: number };
+
+export async function getSkills(): Promise<SkillInfo[]> {
+  const res = await apiGet<{ data: SkillInfo[] } | SkillInfo[]>('/api/skill');
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+export async function getCommands(): Promise<CommandInfo[]> {
+  const res = await apiGet<{ data: CommandInfo[] } | CommandInfo[]>('/api/command');
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+export async function getMcpServers(): Promise<McpServer[]> {
+  const res = await apiGet<{ data: McpServer[] } | McpServer[]>('/api/mcp');
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+export function connectMcp(name: string) {
+  return request(`/api/experimental/mcp/${encodeURIComponent(name)}/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+}
+
+export function disconnectMcp(name: string) {
+  return request(`/api/experimental/mcp/${encodeURIComponent(name)}/disconnect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+}
+
+export function removeMcp(name: string) {
+  return request(`/api/experimental/mcp/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+export async function getIntegrations(): Promise<Integration[]> {
+  const res = await apiGet<{ data: Integration[] } | Integration[]>('/api/integration');
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+export function connectIntegrationKey(id: string, key: string, label?: string) {
+  return request(`/api/integration/${encodeURIComponent(id)}/connect/key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(label ? { key, label } : { key }),
+  });
+}
+
+export async function getWebSearchProviders(): Promise<WebSearchProvider[]> {
+  const res = await apiGet<{ data: WebSearchProvider[] } | WebSearchProvider[]>('/api/websearch/provider');
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+export async function getConfigSources(): Promise<ConfigSource[]> {
+  const res = await apiGet<ConfigSource[] | { data: ConfigSource[] }>('/api/config');
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+/** Modelo por defecto del servidor (el que usa cuando no se especifica otro). */
+export async function getDefaultModel(): Promise<DefaultModel | null> {
+  const res = await apiGet<{ data: DefaultModel } | DefaultModel>('/api/model/default');
+  return 'data' in (res as object) ? ((res as { data: DefaultModel }).data ?? null) : (res as DefaultModel);
+}
+
+/** Crea un código de emparejamiento de un solo uso (caduca en `expires_in` s). */
+export async function createPairing(): Promise<Pairing> {
+  const text = await request('/api/pair', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  const json = JSON.parse(text) as Pairing | { data: Pairing };
+  return 'data' in json && json.data ? json.data : (json as Pairing);
 }
 
 // ---------- formularios (questions) ----------

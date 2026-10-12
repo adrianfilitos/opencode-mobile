@@ -65,6 +65,48 @@ export default function AjustesMenu() {
         onPress={() => router.push('/ajustes/proveedores' as never)}
       />
       <SettingsRow
+        icon="link"
+        title="Integraciones"
+        subtitle="Buscar y añadir claves (300+)"
+        chevron
+        onPress={() => router.push('/ajustes/integraciones' as never)}
+      />
+      <SettingsRow
+        icon="person.2"
+        title="Agentes"
+        subtitle="Cuáles hay y sus reglas de permisos"
+        chevron
+        onPress={() => router.push('/ajustes/agentes' as never)}
+      />
+      <SettingsRow
+        icon="cpu"
+        title="Modelo por defecto"
+        subtitle="El que usa el servidor si no se indica otro"
+        chevron
+        onPress={() => router.push('/ajustes/modelo-defecto' as never)}
+      />
+      <SettingsRow
+        icon="server.rack"
+        title="MCP"
+        subtitle="Servidores, conectar y desconectar"
+        chevron
+        onPress={() => router.push('/ajustes/mcp' as never)}
+      />
+      <SettingsRow
+        icon="magnifyingglass"
+        title="Búsqueda web"
+        subtitle="Proveedores disponibles"
+        chevron
+        onPress={() => router.push('/ajustes/busqueda' as never)}
+      />
+      <SettingsRow
+        icon="sparkles"
+        title="Skills y comandos"
+        subtitle="Lo que ofrece el servidor (solo lectura)"
+        chevron
+        onPress={() => router.push('/ajustes/skills' as never)}
+      />
+      <SettingsRow
         icon="puzzlepiece.extension"
         title="Plugins"
         subtitle="Buscar y aplicar actualizaciones"
@@ -77,6 +119,20 @@ export default function AjustesMenu() {
         subtitle="Reglas «Siempre» que puedes revocar"
         chevron
         onPress={() => router.push('/ajustes/permisos' as never)}
+      />
+      <SettingsRow
+        icon="gearshape"
+        title="Configuración"
+        subtitle="De dónde lee la config el servidor"
+        chevron
+        onPress={() => router.push('/ajustes/configuracion' as never)}
+      />
+      <SettingsRow
+        icon="qrcode"
+        title="Emparejar"
+        subtitle="Generar un código para otro dispositivo"
+        chevron
+        onPress={() => router.push('/ajustes/emparejar' as never)}
       />
 
       <Text style={s.section}>App</Text>
