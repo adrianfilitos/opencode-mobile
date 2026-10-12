@@ -67,7 +67,7 @@ jobs:
         run: |
           set -o pipefail
           cd ios
-          xcodebuild \
+          if ! xcodebuild \
             -workspace "${{ steps.scheme.outputs.scheme }}.xcworkspace" \
             -scheme "${{ steps.scheme.outputs.scheme }}" \
             -configuration Release \
@@ -79,7 +79,15 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_USER_SCRIPT_SANDBOXING=NO \
-            2>&1 | tail -120
+            > build.log 2>&1; then
+            echo "########## ERRORES ##########"
+            grep -n -i -E "error:|fatal|The following build commands failed|Command PhaseScriptExecution" build.log | head -60 || true
+            echo "########## ULTIMAS 120 LINEAS ##########"
+            tail -120 build.log
+            exit 1
+          fi
+          echo "OK: compilado"
+          tail -15 build.log
 
       - name: Empaquetar el IPA
         run: |
