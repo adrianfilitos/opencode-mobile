@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet } from 'react-native';
+import { ScrollView, StyleSheet, Text } from 'react-native';
 
 import { SettingsRow } from '@/components/settings-row';
 import { loadCreds } from '@/lib/api';
@@ -55,6 +55,31 @@ export default function AjustesMenu() {
         chevron
         onPress={() => router.push('/ajustes/apariencia' as never)}
       />
+
+      <Text style={s.section}>OpenCode · servidor</Text>
+      <SettingsRow
+        icon="key"
+        title="Proveedores y claves"
+        subtitle="Qué hay conectado y con qué clave"
+        chevron
+        onPress={() => router.push('/ajustes/proveedores' as never)}
+      />
+      <SettingsRow
+        icon="puzzlepiece.extension"
+        title="Plugins"
+        subtitle="Buscar y aplicar actualizaciones"
+        chevron
+        onPress={() => router.push('/ajustes/plugins' as never)}
+      />
+      <SettingsRow
+        icon="checkmark.shield"
+        title="Permisos guardados"
+        subtitle="Reglas «Siempre» que puedes revocar"
+        chevron
+        onPress={() => router.push('/ajustes/permisos' as never)}
+      />
+
+      <Text style={s.section}>App</Text>
       <SettingsRow
         icon="info.circle"
         title="Acerca de"
@@ -70,5 +95,15 @@ export default function AjustesMenu() {
 const makeStyles = (t: Palette) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.bg },
-    content: { paddingHorizontal: 14, paddingTop: 6 },
+    content: { paddingHorizontal: 14, paddingTop: 6, paddingBottom: 24 },
+    section: {
+      color: t.dimSoft,
+      fontSize: 11.5,
+      fontWeight: '700',
+      textTransform: 'uppercase',
+      letterSpacing: 0.4,
+      marginTop: 22,
+      marginBottom: 4,
+      paddingHorizontal: 2,
+    },
   });

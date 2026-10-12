@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AppState } from 'react-native';
 
 import { authHeader, loadCreds, ping } from '@/lib/api';
 
@@ -31,6 +32,7 @@ let closed = false;
 let xhr: XMLHttpRequest | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
+let appSub: { remove: () => void } | null = null;
 
 export function connectionState(): ConnState {
   return state;
@@ -95,6 +97,16 @@ function ensureStarted() {
   beat();
   heartbeat = setInterval(beat, 12000);
 
+  // Al volver del segundo plano, si no estamos online, reintenta enseguida.
+  appSub = AppState.addEventListener('change', (s) => {
+    if (closed || s !== 'active' || state === 'online') return;
+    if (retry) {
+      clearTimeout(retry);
+      retry = null;
+    }
+    connect();
+  });
+
   connect();
 }
 
@@ -110,44 +122,67 @@ function connect() {
     }, 1800);
   };
 
-  loadCreds()
-    .then((creds) => {
-      if (!creds || closed) {
-        setState('offline');
-        return;
-      }
-      let seen = 0;
-      const x = new XMLHttpRequest();
-      xhr = x;
-      x.open('GET', `${creds.baseUrl}/api/event`);
-      x.setRequestHeader('Authorization', authHeader(creds.token));
-      x.setRequestHeader('Accept', 'text/event-stream');
+  // Cierra la conexión anterior. Sus callbacks se ignoran porque comparan con `xhr`.
+  const prev = xhr;
+  xhr = null;
+  if (prev) {
+    try {
+      prev.abort();
+    } catch {
+      /* ignorar */
+    }
+  }
 
-      x.onreadystatechange = () => {
-        if (closed) return;
-        if (x.readyState === 3) {
-          const text = x.responseText ?? '';
-          if (text.length > seen) setState('online');
-          const chunk = text.slice(seen);
-          seen = text.length;
-          for (const raw of chunk.split('\n')) {
-            const line = raw.trim();
-            if (!line.startsWith('data:')) continue;
-            try {
-              const json = JSON.parse(line.slice(5).trim()) as SseEvent;
-              if (json.type) emit(json);
-            } catch {
-              /* trozo incompleto: se recupera en el siguiente */
-            }
+  void (async () => {
+    // `ping` prueba todas las direcciones conocidas y deja la buena como activa,
+    // así que el SSE no se queda pegado a una IP muerta.
+    const ok = await ping().catch(() => false);
+    const creds = await loadCreds();
+    if (closed) return;
+    if (!ok || !creds) {
+      // Sin emparejar todavía (o sin respuesta): reintentar, nunca rendirse.
+      scheduleRetry();
+      return;
+    }
+
+    let seen = 0;
+    let buffer = '';
+    const x = new XMLHttpRequest();
+    xhr = x;
+    x.open('GET', `${creds.baseUrl}/api/event`);
+    x.setRequestHeader('Authorization', authHeader(creds.token));
+    x.setRequestHeader('Accept', 'text/event-stream');
+
+    x.onreadystatechange = () => {
+      if (closed || xhr !== x) return;
+      if (x.readyState === 3) {
+        const text = x.responseText ?? '';
+        if (text.length > seen) setState('online');
+        const chunk = buffer + text.slice(seen);
+        seen = text.length;
+        const lines = chunk.split('\n');
+        // La última línea puede venir a medias: se guarda para el trozo siguiente.
+        buffer = lines.pop() ?? '';
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line.startsWith('data:')) continue;
+          try {
+            const json = JSON.parse(line.slice(5).trim()) as SseEvent;
+            if (json.type) emit(json);
+          } catch {
+            /* línea ilegible: se ignora */
           }
-        } else if (x.readyState === 4) {
-          scheduleRetry();
         }
-      };
-      x.onerror = scheduleRetry;
-      x.send();
-    })
-    .catch(() => setState('offline'));
+      } else if (x.readyState === 4) {
+        scheduleRetry();
+      }
+    };
+    x.onerror = () => {
+      if (closed || xhr !== x) return;
+      scheduleRetry();
+    };
+    x.send();
+  })();
 }
 
 /** Corta la conexión y el latido (solo lo usa el cierre de la app). */
@@ -158,6 +193,12 @@ export function stopEvents() {
   if (heartbeat) clearInterval(heartbeat);
   retry = null;
   heartbeat = null;
+  try {
+    appSub?.remove();
+  } catch {
+    /* ignorar */
+  }
+  appSub = null;
   try {
     xhr?.abort();
   } catch {

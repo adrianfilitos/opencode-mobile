@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 
 const KEY_URL = 'oc.baseUrl';
+const KEY_URLS = 'oc.baseUrls';
 const KEY_TOKEN = 'oc.token';
 
 export type Session = {
@@ -12,9 +13,20 @@ export type Session = {
   time?: { created?: number; updated?: number };
 };
 
-type Creds = { baseUrl: string; token: string };
+type Creds = { baseUrl: string; token: string; urls: string[] };
 
 let cache: Creds | null = null;
+
+/** Quita barras finales y duplicados de una lista de direcciones. */
+function normalizeUrls(list: unknown[]): string[] {
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== 'string' || !item.trim()) continue;
+    const v = item.trim().replace(/\/+$/, '');
+    if (!out.includes(v)) out.push(v);
+  }
+  return out;
+}
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -37,19 +49,37 @@ export async function loadCreds(): Promise<Creds | null> {
   if (cache) return cache;
   const baseUrl = await SecureStore.getItemAsync(KEY_URL);
   const token = await SecureStore.getItemAsync(KEY_TOKEN);
-  if (baseUrl && token) cache = { baseUrl, token };
+  if (!baseUrl || !token) return null;
+  const rawUrls = await SecureStore.getItemAsync(KEY_URLS);
+  let urls: string[] = [];
+  if (rawUrls) {
+    try {
+      urls = normalizeUrls(JSON.parse(rawUrls));
+    } catch {
+      urls = [];
+    }
+  }
+  cache = {
+    baseUrl: baseUrl.replace(/\/+$/, ''),
+    token,
+    urls: normalizeUrls([baseUrl, ...urls]),
+  };
   return cache;
 }
 
 export async function saveCreds(baseUrl: string, token: string) {
-  cache = { baseUrl, token };
-  await SecureStore.setItemAsync(KEY_URL, baseUrl);
+  const base = baseUrl.replace(/\/+$/, '');
+  const urls = normalizeUrls([base, ...(cache?.urls ?? [])]);
+  cache = { baseUrl: base, token, urls };
+  await SecureStore.setItemAsync(KEY_URL, base);
   await SecureStore.setItemAsync(KEY_TOKEN, token);
+  await SecureStore.setItemAsync(KEY_URLS, JSON.stringify(urls));
 }
 
 export async function clearCreds() {
   cache = null;
   await SecureStore.deleteItemAsync(KEY_URL);
+  await SecureStore.deleteItemAsync(KEY_URLS);
   await SecureStore.deleteItemAsync(KEY_TOKEN);
 }
 
@@ -57,21 +87,95 @@ export function authHeader(token: string) {
   return 'Basic ' + b64('opencode:' + token);
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
+/** Direcciones conocidas, la activa primero. */
+export async function getKnownUrls(): Promise<string[]> {
   const creds = await loadCreds();
-  if (!creds) throw new Error('Sin conexión configurada');
-  const res = await fetch(creds.baseUrl + path, {
-    headers: { Authorization: authHeader(creds.token) },
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 180)}`);
-  return JSON.parse(text) as T;
+  return creds ? normalizeUrls([creds.baseUrl, ...creds.urls]) : [];
 }
 
-/** Devuelve true si el servidor responde y estamos autenticados. */
+/** Añade direcciones nuevas a la lista (p. ej. las que reporta `/api/info`). */
+export async function rememberUrls(list: string[]) {
+  const creds = await loadCreds();
+  if (!creds || list.length === 0) return;
+  const urls = normalizeUrls([creds.baseUrl, ...creds.urls, ...list]);
+  const same =
+    urls.length === creds.urls.length && urls.every((u, i) => u === creds.urls[i]);
+  if (same) return;
+  cache = { ...creds, urls };
+  await SecureStore.setItemAsync(KEY_URLS, JSON.stringify(urls));
+}
+
+/** Deja una dirección como activa (la primera que se probará). */
+export async function activateUrl(url: string) {
+  const creds = await loadCreds();
+  if (!creds) return;
+  const base = url.trim().replace(/\/+$/, '');
+  if (base === creds.baseUrl) return;
+  const urls = normalizeUrls([base, ...creds.urls]);
+  cache = { baseUrl: base, token: creds.token, urls };
+  await SecureStore.setItemAsync(KEY_URL, base);
+  await SecureStore.setItemAsync(KEY_URLS, JSON.stringify(urls));
+}
+
+type ReqInit = { method?: string; headers?: Record<string, string>; body?: string };
+
+class HttpError extends Error {
+  status: number;
+  constructor(status: number, body: string) {
+    super(`HTTP ${status}: ${body.slice(0, 180)}`);
+    this.status = status;
+  }
+}
+
+/**
+ * Petición a la API probando todas las direcciones conocidas.
+ * Si la primera falla a nivel de red, pasa a la siguiente, y la que responde
+ * se queda como dirección activa. Un error HTTP (401, 404…) NO prueba otra
+ * dirección: significa que el host es el correcto.
+ */
+async function request(path: string, init?: ReqInit): Promise<string> {
+  const creds = await loadCreds();
+  if (!creds) throw new Error('Sin conexión configurada');
+  const order = normalizeUrls([creds.baseUrl, ...creds.urls]);
+  const withTimeout = order.length > 1;
+  let lastErr: unknown = null;
+
+  for (const base of order) {
+    const ctrl = withTimeout ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 6000) : null;
+    try {
+      const res = await fetch(base + path, {
+        method: init?.method,
+        headers: { Authorization: authHeader(creds.token), ...(init?.headers ?? {}) },
+        body: init?.body,
+        signal: ctrl ? ctrl.signal : undefined,
+      });
+      const text = await res.text();
+      if (!res.ok) throw new HttpError(res.status, text);
+      if (base !== creds.baseUrl) await activateUrl(base);
+      return text;
+    } catch (e) {
+      lastErr = e;
+      if (e instanceof HttpError) throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('No se pudo conectar con el servidor');
+}
+
+export async function apiGet<T>(path: string): Promise<T> {
+  return JSON.parse(await request(path)) as T;
+}
+
+/**
+ * ¿Responde el servidor y estamos autenticados? De paso aprende sus
+ * direcciones actuales desde `/api/info`, para sobrevivir a los cambios de IP.
+ */
 export async function ping(): Promise<boolean> {
   try {
-    await apiGet('/api/info');
+    const info = JSON.parse(await request('/api/info')) as { urls?: string[] };
+    if (Array.isArray(info.urls)) await rememberUrls(info.urls);
     return true;
   } catch {
     return false;
@@ -141,28 +245,15 @@ export async function getMessages(
 }
 
 export async function sendPrompt(sessionId: string, text: string, files?: Attachment[]) {
-  const creds = await loadCreds();
-  if (!creds) throw new Error('Sin conexión configurada');
-  const res = await fetch(`${creds.baseUrl}/api/session/${sessionId}/prompt`, {
+  return request(`/api/session/${sessionId}/prompt`, {
     method: 'POST',
-    headers: { Authorization: authHeader(creds.token), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(files && files.length > 0 ? { text, files } : { text }),
   });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${t.slice(0, 180)}`);
-  return t;
 }
 
 export async function interruptSession(sessionId: string) {
-  const creds = await loadCreds();
-  if (!creds) throw new Error('Sin conexión configurada');
-  const res = await fetch(`${creds.baseUrl}/api/session/${sessionId}/interrupt`, {
-    method: 'POST',
-    headers: { Authorization: authHeader(creds.token) },
-  });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${t.slice(0, 180)}`);
-  return t;
+  return request(`/api/session/${sessionId}/interrupt`, { method: 'POST' });
 }
 
 // ---------- diff ----------
@@ -183,19 +274,12 @@ export async function getSessionDiff(sessionId: string): Promise<FileDiff[]> {
 // ---------- acciones de sesión ----------
 
 async function sessionAction(sessionId: string, path: string, method: string, body?: unknown) {
-  const creds = await loadCreds();
-  if (!creds) throw new Error('Sin conexión configurada');
-  const res = await fetch(`${creds.baseUrl}/api/session/${sessionId}${path}`, {
+  return request(`/api/session/${sessionId}${path}`, {
     method,
-    headers: {
-      Authorization: authHeader(creds.token),
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    ...(body !== undefined
+      ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      : {}),
   });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${t.slice(0, 180)}`);
-  return t;
 }
 
 export function renameSession(sessionId: string, title: string) {
@@ -203,16 +287,12 @@ export function renameSession(sessionId: string, title: string) {
 }
 
 export async function forkSession(sessionId: string): Promise<{ id: string } | null> {
-  const creds = await loadCreds();
-  if (!creds) throw new Error('Sin conexión configurada');
-  const res = await fetch(`${creds.baseUrl}/api/session/${sessionId}/fork`, {
+  const text = await request(`/api/session/${sessionId}/fork`, {
     method: 'POST',
-    headers: { Authorization: authHeader(creds.token), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
   });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${t.slice(0, 180)}`);
-  const json = JSON.parse(t) as { data?: { id: string } } | { id: string };
+  const json = JSON.parse(text) as { data?: { id: string } } | { id: string };
   return ('data' in json && json.data ? json.data : (json as { id: string })) ?? null;
 }
 
@@ -246,16 +326,11 @@ export async function setSessionModel(
   sessionId: string,
   model: { id: string; providerID: string; variant?: string }
 ) {
-  const creds = await loadCreds();
-  if (!creds) throw new Error('Sin conexión configurada');
-  const res = await fetch(`${creds.baseUrl}/api/session/${sessionId}/model`, {
+  return request(`/api/session/${sessionId}/model`, {
     method: 'POST',
-    headers: { Authorization: authHeader(creds.token), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model }),
   });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${t.slice(0, 180)}`);
-  return t;
 }
 
 // ---------- agentes ----------
@@ -290,16 +365,168 @@ export async function replyPermission(
   requestId: string,
   decision: 'once' | 'always' | 'reject'
 ) {
-  const creds = await loadCreds();
-  if (!creds) throw new Error('Sin conexión configurada');
-  const res = await fetch(`${creds.baseUrl}/api/session/${sessionId}/permission/${requestId}/reply`, {
+  return request(`/api/session/${sessionId}/permission/${requestId}/reply`, {
     method: 'POST',
-    headers: { Authorization: authHeader(creds.token), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ decision }),
   });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${t.slice(0, 180)}`);
-  return t;
+}
+
+// ---------- gestión del servidor (OpenCode) ----------
+
+export type Provider = {
+  id: string;
+  integrationID?: string;
+  name?: string;
+  /** 'auto' | 'enabled' | … */
+  activation?: string;
+  package?: string;
+  settings?: Record<string, unknown>;
+};
+
+export type Credential = {
+  id: string;
+  integrationID: string;
+  label?: string;
+  active?: boolean;
+  value?: { type?: string; key?: string };
+};
+
+export type PluginSource = {
+  /** 'builtin' | 'package' | 'local' | 'sdk' */
+  type?: string;
+  target?: string;
+  version?: string;
+  path?: string;
+  outdated?: boolean;
+  updating?: boolean;
+};
+
+export type PluginInfo = {
+  id: string;
+  source?: PluginSource;
+  features?: Record<string, boolean>;
+  state?: { status?: string; error?: string };
+};
+
+export type SavedPermission = {
+  id: string;
+  projectID?: string;
+  action: string;
+  resource: string;
+  time?: { created?: number; updated?: number };
+};
+
+export async function getProviders(): Promise<Provider[]> {
+  const res = await apiGet<{ data: Provider[] } | Provider[]>('/api/provider');
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+export async function getCredentials(): Promise<Credential[]> {
+  const res = await apiGet<{ data: Credential[] }>('/api/credential');
+  return res.data ?? [];
+}
+
+export async function getPlugins(): Promise<PluginInfo[]> {
+  const res = await apiGet<{ data: PluginInfo[] } | PluginInfo[]>('/api/plugin');
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+async function pluginAction(path: string): Promise<PluginInfo[]> {
+  const text = await request(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  return (JSON.parse(text) as { data?: PluginInfo[] }).data ?? [];
+}
+
+/** Busca actualizaciones (marca `source.outdated` en los plugins). */
+export function checkPluginUpdates() {
+  return pluginAction('/api/plugin/check');
+}
+
+/** Actualiza los plugins que estén desactualizados. */
+export function updatePlugins() {
+  return pluginAction('/api/plugin/update');
+}
+
+export async function getSavedPermissions(): Promise<SavedPermission[]> {
+  const res = await apiGet<{ data: SavedPermission[] }>('/api/permission/saved');
+  return res.data ?? [];
+}
+
+export function removeSavedPermission(id: string) {
+  return request(`/api/permission/saved/${id}`, { method: 'DELETE' });
+}
+
+/** Descripción corta del origen de un plugin. */
+export function pluginWhere(p: PluginInfo): string {
+  const s = p.source ?? {};
+  if (s.type === 'package') return `${s.target ?? ''}${s.version ? ` v${s.version}` : ''}`;
+  if (s.type === 'local') return s.path ?? 'local';
+  return s.type ?? '';
+}
+
+/** Máscara de una clave: deja ver solo los últimos 4 caracteres. */
+export function maskKey(key?: string): string {
+  if (!key) return '••••';
+  return key.length <= 4 ? '••••' : '••••' + key.slice(-4);
+}
+
+// ---------- formularios (questions) ----------
+
+export type FormOption = { value: string; label: string; description?: string };
+
+export type FormFieldType = 'string' | 'number' | 'integer' | 'boolean' | 'multiselect' | 'external';
+
+export type FormField = {
+  key: string;
+  type: FormFieldType;
+  title?: string;
+  description?: string;
+  required?: boolean;
+  hidden?: boolean;
+  when?: { key: string; op: 'eq' | 'neq'; value: string | number | boolean }[];
+  placeholder?: string;
+  format?: 'email' | 'uri' | 'date' | 'date-time';
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  pattern?: string;
+  options?: FormOption[];
+  custom?: boolean;
+  default?: string | number | boolean | string[];
+  url?: string;
+};
+
+/** Un formulario pendiente (la `question` del agente). */
+export type FormInfo = {
+  id: string;
+  sessionID: string;
+  title: string;
+  metadata?: Record<string, unknown>;
+  fields: FormField[];
+};
+
+/** Respuesta: `clave -> valor`, donde el valor es texto, número, booleano o lista de textos. */
+export type FormAnswer = Record<string, string | number | boolean | string[]>;
+
+export async function getForms(sessionId: string): Promise<FormInfo[]> {
+  const res = await apiGet<{ data: FormInfo[] }>(`/api/session/${sessionId}/form`);
+  return res.data ?? [];
+}
+
+export function replyForm(sessionId: string, formId: string, answer: FormAnswer) {
+  return sessionAction(sessionId, `/form/${formId}/reply`, 'POST', { answer });
+}
+
+export function cancelForm(sessionId: string, formId: string, message?: string) {
+  const q = message ? `?message=${encodeURIComponent(message)}` : '';
+  return sessionAction(sessionId, `/form/${formId}${q}`, 'DELETE');
 }
 
 // ---------- proyectos y sesiones ----------
@@ -324,21 +551,17 @@ export async function createSession(
   directory: string,
   opts?: { agent?: string; model?: { id: string; providerID: string } }
 ): Promise<{ id: string }> {
-  const creds = await loadCreds();
-  if (!creds) throw new Error('Sin conexión configurada');
   const body = {
     location: { directory },
     agent: opts?.agent ?? DEFAULT_AGENT,
     model: opts?.model ?? DEFAULT_MODEL,
   };
-  const res = await fetch(`${creds.baseUrl}/api/session`, {
+  const text = await request('/api/session', {
     method: 'POST',
-    headers: { Authorization: authHeader(creds.token), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${t.slice(0, 180)}`);
-  const json = JSON.parse(t) as { data?: { id: string } } | { id: string };
+  const json = JSON.parse(text) as { data?: { id: string } } | { id: string };
   return ('data' in json && json.data ? json.data : (json as { id: string })) as { id: string };
 }
 

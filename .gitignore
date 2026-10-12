@@ -55,6 +55,7 @@ android/
 
 # --- artefactos del helper ---
 tools/oc-helper/*.exe
+tools/oc-helper/*.bak
 tools/oc-helper/rsrc.syso
 tools/oc-helper/*.old.log
 *~

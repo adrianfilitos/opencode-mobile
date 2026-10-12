@@ -20,24 +20,29 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import Drawer from '@/components/drawer';
+import FormCard from '@/components/form-card';
 import Md from '@/components/md';
 import ModelPicker from '@/components/model-picker';
 import QuickActions from '@/components/quick-actions';
 import SessionMenu from '@/components/session-menu';
 import Sheet, { SheetPeek } from '@/components/sheet';
 import {
+  cancelForm,
   compactSession,
   deleteSession,
   forkSession,
+  getForms,
   getMessages,
   getPermissions,
   getSessionDiff,
   interruptSession,
   renameSession,
+  replyForm,
   replyPermission,
   sendPrompt,
   setSessionModel,
   type FileDiff,
+  type FormInfo,
   type Msg,
   type Part,
   type PermissionRequest,
@@ -399,6 +404,7 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
   const [loadingMore, setLoadingMore] = useState(false);
 
   const [perms, setPerms] = useState<PermissionRequest[]>([]);
+  const [forms, setForms] = useState<FormInfo[]>([]);
   const [diff, setDiff] = useState<FileDiff[]>([]);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -435,6 +441,11 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
         setPerms(await getPermissions(sessionId));
       } catch {
         setPerms([]);
+      }
+      try {
+        setForms(await getForms(sessionId));
+      } catch {
+        setForms([]);
       }
       try {
         setDiff(await getSessionDiff(sessionId));
@@ -519,6 +530,11 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
         case 'session.execution.failed':
           setThinking(false);
           setStream(null);
+          schedule();
+          break;
+        case 'form.created':
+        case 'form.replied':
+        case 'form.cancelled':
           schedule();
           break;
         default:
@@ -703,6 +719,34 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
         ) : (
           <EmptyState />
         )}
+
+        {sessionId && forms.length > 0
+          ? forms.map((f) => (
+              <FormCard
+                key={f.id}
+                form={f}
+                onReply={async (answer) => {
+                  try {
+                    await replyForm(sessionId, f.id, answer);
+                    setForms((list) => list.filter((x) => x.id !== f.id));
+                    load();
+                  } catch (e) {
+                    haptic('error');
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+                onCancel={async () => {
+                  try {
+                    await cancelForm(sessionId, f.id);
+                    setForms((list) => list.filter((x) => x.id !== f.id));
+                    load();
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              />
+            ))
+          : null}
 
         {sessionId && perms.length > 0 ? (
           <PermissionCard

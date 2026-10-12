@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/lxn/walk"
 )
@@ -18,8 +19,18 @@ func exeDir() string {
 	return filepath.Dir(exe)
 }
 
+// tsCandidate devuelve la dirección de Tailscale, si existe ahora mismo.
+func tsCandidate() (ifaceIP, bool) {
+	for _, c := range candidateIPs() {
+		if strings.Contains(c.Label, "Tailscale") {
+			return c, true
+		}
+	}
+	return ifaceIP{}, false
+}
+
 // runTray arranca el icono en la bandeja del sistema (junto al reloj).
-func runTray(cli string, cands []ifaceIP, port int, svc serviceFile) {
+func runTray(cli string, port int, svc serviceFile) {
 	mw, err := walk.NewMainWindow()
 	if err != nil {
 		logf("✗ no se pudo crear la ventana base: %v", err)
@@ -53,10 +64,17 @@ func runTray(cli string, cands []ifaceIP, port int, svc serviceFile) {
 		return a
 	}
 
-	addItem("Mostrar QR · Wi-Fi local", func() { showQR(cli, cands[0].IP, port) })
-	if len(cands) > 1 {
-		ts := cands[len(cands)-1]
-		addItem("Mostrar QR · Tailscale", func() { showQR(cli, ts.IP, port) })
+	// La IP se vuelve a detectar en cada clic: si el router la cambia (DHCP),
+	// el QR no se queda apuntando para siempre a una dirección muerta.
+	addItem("Mostrar QR · Wi-Fi local", func() {
+		showQR(cli, candidateIPs()[0].IP, port)
+	})
+	if _, ok := tsCandidate(); ok {
+		addItem("Mostrar QR · Tailscale", func() {
+			if ts, ok := tsCandidate(); ok {
+				showQR(cli, ts.IP, port)
+			}
+		})
 	}
 
 	menu.Actions().Add(walk.NewSeparatorAction())
@@ -113,7 +131,7 @@ func runTray(cli string, cands []ifaceIP, port int, svc serviceFile) {
 
 	ni.MouseUp().Attach(func(x, y int, button walk.MouseButton) {
 		if button == walk.LeftButton {
-			showQR(cli, cands[0].IP, port)
+			showQR(cli, candidateIPs()[0].IP, port)
 		}
 	})
 

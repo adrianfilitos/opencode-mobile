@@ -18,9 +18,9 @@ import {
 import { Sym } from '@/components/settings-row';
 import type { Palette } from '@/theme/palettes';
 import { usePalette } from '@/theme/theme';
-import { baseUrlFromLink, redeem, saveCreds } from '@/lib/api';
+import { baseUrlFromLink, ping, redeem, saveCreds } from '@/lib/api';
 
-const DEFAULT_URL = 'http://192.168.1.100:49374';
+const EXAMPLE_URL = 'http://192.168.1.37:49374';
 
 function useStyles() {
   const t = usePalette();
@@ -32,7 +32,7 @@ export default function ConectarScreen() {
   const t = usePalette();
   const router = useRouter();
   const [value, setValue] = useState('');
-  const [url, setUrl] = useState(DEFAULT_URL);
+  const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -75,11 +75,17 @@ export default function ConectarScreen() {
       if (v.includes('/auth/connect/')) {
         const base = baseUrlFromLink(v);
         console.log('[conectar] base url:', base);
+        if (!base && !url.trim()) throw new Error('No reconozco la dirección del enlace');
+        if (base) setUrl(base);
         const token = await redeem(v);
         console.log('[conectar] token recibido, longitud:', token.length);
         await saveCreds(base ?? url, token);
+        // Aprende las demás direcciones del servidor (p. ej. Tailscale) para
+        // que un cambio de IP no vuelva a romper la conexión.
+        await ping().catch(() => {});
         console.log('[conectar] credenciales guardadas');
       } else if (v.length > 10) {
+        if (!url.trim()) throw new Error('Escribe también la dirección del servidor');
         await saveCreds(url, v);
       } else {
         throw new Error('Pega el enlace de emparejamiento, o escanea el QR');
@@ -194,10 +200,15 @@ export default function ConectarScreen() {
         <Text style={s.label}>Enlace de emparejamiento o token</Text>
         <TextInput
           style={s.input}
-          placeholder="http://192.168.1.41:49374/auth/connect/…"
+          placeholder="http://192.168.1.37:49374/auth/connect/…"
           placeholderTextColor={t.dimSoft}
           value={value}
-          onChangeText={setValue}
+          onChangeText={(v) => {
+            setValue(v);
+            // si pegas un enlace, la dirección se rellena sola
+            const base = baseUrlFromLink(v);
+            if (base) setUrl(base);
+          }}
           autoCapitalize="none"
           autoCorrect={false}
           multiline
@@ -206,7 +217,7 @@ export default function ConectarScreen() {
         <Text style={s.label}>Dirección del servidor</Text>
         <TextInput
           style={s.input}
-          placeholder={DEFAULT_URL}
+          placeholder={EXAMPLE_URL}
           placeholderTextColor={t.dimSoft}
           value={url}
           onChangeText={setUrl}

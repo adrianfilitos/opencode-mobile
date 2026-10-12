@@ -360,7 +360,7 @@ func main() {
 	}
 
 	if *useTray {
-		runTray(cli, cands, *port, svc)
+		runTray(cli, *port, svc)
 		return
 	}
 
