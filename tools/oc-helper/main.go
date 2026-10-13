@@ -24,6 +24,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,12 +201,45 @@ func showQR(cli, ip string, port int) {
 		logf("· No se pudo generar el enlace para %s", ip)
 		return
 	}
+	link = withExtraURLs(link, ip, port)
 	file := writeQR(link, ip)
 	if file == "" {
 		return
 	}
 	logf("· QR de %s generado", ip)
 	openPath(file)
+}
+
+// withExtraURLs añade al enlace, detrás de un `#u=`, las direcciones que NO
+// cambian aunque el PC cambie de IP (nombre .local y Tailscale). La app las
+// guarda al emparejar, y así deja de «desvincularse» cuando cambia la IP.
+func withExtraURLs(link, chosenIP string, port int) string {
+	var urls []string
+	add := func(u string) {
+		if u == "" || strings.Contains(u, chosenIP) {
+			return
+		}
+		for _, x := range urls {
+			if x == u {
+				return
+			}
+		}
+		urls = append(urls, u)
+	}
+	// Nombre mDNS del PC: funciona en cualquier red local, aunque cambie la IP.
+	if h, err := os.Hostname(); err == nil && h != "" {
+		add(fmt.Sprintf("http://%s.local:%d", strings.ToLower(h), port))
+	}
+	// Tailscale: funciona desde cualquier sitio (fuera de casa incluido).
+	for _, c := range candidateIPs() {
+		if strings.Contains(c.Label, "Tailscale") {
+			add(fmt.Sprintf("http://%s:%d", c.IP, port))
+		}
+	}
+	if len(urls) == 0 {
+		return link
+	}
+	return link + "#u=" + url.QueryEscape(strings.Join(urls, ","))
 }
 
 // ---------- ntfy ----------
@@ -378,6 +412,7 @@ func main() {
 				logf("  (no se pudo generar el enlace)")
 				continue
 			}
+			link = withExtraURLs(link, c.IP, *port)
 			logf("  Enlace: %s", link)
 			file := writeQR(link, c.IP)
 			if file != "" {

@@ -115,6 +115,24 @@ export default function AparienciaScreen() {
           thumbColor="#ffffff"
         />
       </View>
+      <View style={s.toggleRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={s.rowText}>Vibración al escribir</Text>
+          <Text style={s.rowHint}>
+            Toques suaves mientras el agente responde, más seguidos cuanto más rápido escribe
+          </Text>
+        </View>
+        <Switch
+          value={prefs.typingHaptics}
+          onValueChange={(v) => {
+            set({ typingHaptics: v });
+            haptic('select');
+          }}
+          disabled={!prefs.haptics}
+          trackColor={{ true: t.accent, false: t.line }}
+          thumbColor="#ffffff"
+        />
+      </View>
       <View style={[s.toggleRow, { borderBottomWidth: 0 }]}>
         <View style={{ flex: 1 }}>
           <Text style={s.rowText}>Avisos dentro de la app</Text>

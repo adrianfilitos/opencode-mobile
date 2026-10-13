@@ -42,6 +42,14 @@ export default function ModeloScreen() {
     [models]
   );
 
+  /** Agentes elegibles: principales y visibles (build, plan…). */
+  const pickable = useMemo(() => {
+    const list = agents.filter((a) => !a.hidden && a.mode !== 'subagent');
+    if (list.length > 0) return list;
+    if (agents.length > 0) return agents;
+    return [{ name: prefs.agent }] as AgentInfo[];
+  }, [agents, prefs.agent]);
+
   const chosen = models.find(
     (m) => m.id === prefs.modelId && m.providerID === prefs.providerID
   );
@@ -54,16 +62,19 @@ export default function ModeloScreen() {
       {loading ? <ActivityIndicator color={t.accent} style={{ marginVertical: 18 }} /> : null}
 
       <SectionLabel>Agente por defecto</SectionLabel>
-      {(agents.length > 0 ? agents.map((a) => a.name) : [prefs.agent]).map((name, i, arr) => (
+      {pickable.map((a, i, arr) => (
         <SettingsRow
-          key={name}
-          title={name}
-          subtitle={agents.find((a) => a.name === name)?.description}
-          check={prefs.agent === name}
+          key={a.id ?? a.name}
+          title={a.name ?? a.id ?? ''}
+          subtitle={a.description}
+          check={prefs.agent === (a.id ?? a.name)}
           last={i === arr.length - 1}
           onPress={() => {
             haptic('select');
-            set({ agent: name });
+            // ¡OJO! Se guarda el ID («build»), NO el nombre («Build»): el
+            // servidor no encuentra el agente si se le pasa el nombre y el
+            // turno moría con AgentNotFoundError.
+            set({ agent: a.id ?? a.name });
           }}
         />
       ))}

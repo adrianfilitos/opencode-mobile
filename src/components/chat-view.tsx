@@ -60,6 +60,7 @@ import {
 import { pickFiles, pickImages, takePhoto, type Picked } from '@/lib/attachments';
 import { subscribeEvents, useConnection, type ConnState } from '@/lib/events';
 import { haptic } from '@/lib/haptics';
+import { feedTyping, resetTypingHaptics } from '@/lib/typing-haptics';
 import { usePrefs } from '@/lib/prefs';
 import type { Palette } from '@/theme/palettes';
 import { usePalette, useTheme } from '@/theme/theme';
@@ -157,12 +158,14 @@ function Header({
   conn,
   onMenu,
   onMore,
+  onConn,
   extra,
 }: {
   title: string;
   conn: ConnState;
   onMenu: () => void;
   onMore: () => void;
+  onConn?: () => void;
   extra?: ReactNode;
 }) {
   const s = useStyles();
@@ -175,7 +178,7 @@ function Header({
       <Text style={s.title} numberOfLines={1}>
         {title}
       </Text>
-      <Pressable hitSlop={8} style={s.conn} onPress={() => {}}>
+      <Pressable hitSlop={8} style={s.conn} onPress={onConn}>
         <View style={[s.connDot, { backgroundColor: CONN_COLOR[conn] }]} />
         <Text style={s.connText}>{CONN_LABEL[conn]}</Text>
       </Pressable>
@@ -596,7 +599,27 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
     if (!sessionId) return;
     try {
       const first = await getMessages(sessionId, { limit: PAGE, order: 'desc' });
-      setPage([...first.data].reverse());
+      const latest = [...first.data].reverse();
+      setPage(latest);
+      // Red de seguridad: si el último mensaje dice que el turno ya terminó
+      // (el asistente tiene `finish`), apagamos el indicador por si el aviso
+      // de «interrumpido» se perdió por el camino (red, segundo plano…).
+      let inFlight = false;
+      for (let i = latest.length - 1; i >= 0; i--) {
+        const m = latest[i];
+        if (m.type === 'user') {
+          inFlight = true;
+          break;
+        }
+        if (m.type === 'assistant') {
+          inFlight = !m.finish;
+          break;
+        }
+      }
+      if (!inFlight) {
+        setStream(null);
+        setThinking(false);
+      }
       setCursor((prev) => prev ?? first.cursor.next ?? null);
       setHasMore((prev) => prev || !!first.cursor.next);
       try {
@@ -631,6 +654,7 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
   /** Al cambiar de sesión: todo a cero. */
   useEffect(() => {
     if (!sessionId) return;
+    resetTypingHaptics();
     setPage([]);
     setOlder([]);
     setCursor(null);
@@ -676,10 +700,13 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
       if (d?.sessionID && d.sessionID !== sessionId) return;
       switch (e.type) {
         case 'session.text.started':
+          resetTypingHaptics();
           setStream({ id: d?.assistantMessageID ?? 'stream', text: '' });
           break;
         case 'session.text.delta':
           if (typeof d?.delta === 'string') {
+            // vibración de escritura: más caracteres/segundo → toques más seguidos
+            feedTyping(d.delta.length);
             const id = d?.assistantMessageID ?? 'stream';
             setStream((p) => ({ id, text: (p && p.id === id ? p.text : '') + d?.delta }));
           }
@@ -696,6 +723,10 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
           break;
         case 'session.execution.succeeded':
         case 'session.execution.failed':
+        // Al DETENER, el servidor manda «interrupted», no «succeeded/failed».
+        // Sin este caso la app se quedaba girando para siempre.
+        case 'session.execution.interrupted':
+          resetTypingHaptics();
           setThinking(false);
           setStream(null);
           schedule();
@@ -770,6 +801,26 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
     return false;
   }, [msgs]);
 
+  /**
+   * ¿El servidor ya devuelve el texto del mensaje en curso?
+   * Si sí, NO pintamos además la copia local del «stream»: el mismo texto
+   * salía DUPLICADO (una vez por el servidor y otra por el stream) y las
+   * herramientas quedaban descolocadas.
+   */
+  const serverHasText = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.type === 'user') return false;
+      if (m.type === 'assistant') {
+        if (m.finish) return false;
+        return (m.content ?? []).some(
+          (p) => p.type === 'text' && (p.text ?? '').trim().length > 0
+        );
+      }
+    }
+    return false;
+  }, [msgs]);
+
   const tools = useMemo(
     () => msgs.flatMap((m) => m.content ?? []).filter((p) => p.type === 'tool'),
     [msgs]
@@ -801,12 +852,17 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
   async function stop() {
     if (!sessionId) return;
     haptic('tap');
+    // Apagamos el indicador AQUÍ MISMO, sin esperar al servidor: así el botón
+    // responde al instante y no se queda «pensando» si el aviso se pierde.
+    setStream(null);
+    setThinking(false);
+    resetTypingHaptics();
     try {
       await interruptSession(sessionId);
-      await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+    await load();
   }
 
   async function send() {
@@ -877,6 +933,10 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
             setMenu(true);
           }}
           onMore={() => sessionId && setSessionMenu(true)}
+          onConn={() => {
+            haptic('tap');
+            router.push('/ajustes/servidor' as never);
+          }}
         />
         <ModelBar model={info.model} reasoning={info.variant} onPress={() => sessionId && setPickerOpen(true)} />
 
@@ -927,7 +987,7 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
               return null;
             })}
 
-            {stream && stream.text ? (
+            {stream && stream.text && !serverHasText ? (
               <View>
                 <View style={s.roleHead}>
                   <View style={s.dot} />
@@ -935,7 +995,7 @@ export default function ChatView({ sessionId, title }: { sessionId?: string; tit
                 </View>
                 <Md>{stream.text + ' ▍'}</Md>
               </View>
-            ) : thinking ? (
+            ) : thinking && !serverHasText ? (
               <View>
                 <View style={s.roleHead}>
                   <View style={s.dot} />

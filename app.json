@@ -13,7 +13,10 @@
     "updates": {
       "url": "https://u.expo.dev/b2103da5-70a2-40e9-862b-efbdbc3ba404",
       "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 3000
+      "fallbackToCacheTimeout": 3000,
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
     },
     "ios": {
       "icon": "./assets/images/icon.png",

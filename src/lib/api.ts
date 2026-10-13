@@ -138,41 +138,87 @@ class HttpError extends Error {
   }
 }
 
+/** Una petición a UNA dirección concreta, con corte por tiempo. */
+async function fetchOne(
+  base: string,
+  path: string,
+  init: ReqInit | undefined,
+  token: string,
+  ms: number
+): Promise<string> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(base + path, {
+      method: init?.method,
+      headers: { Authorization: authHeader(token), ...(init?.headers ?? {}) },
+      body: init?.body,
+      signal: ctrl.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) throw new HttpError(res.status, text);
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
- * Petición a la API probando todas las direcciones conocidas.
- * Si la primera falla a nivel de red, pasa a la siguiente, y la que responde
- * se queda como dirección activa. Un error HTTP (401, 404…) NO prueba otra
- * dirección: significa que el host es el correcto.
+ * Busca EN PARALELO la primera dirección que responde de verdad.
+ * Es lo que hace que un cambio de IP no te deje tirado: aunque la dirección
+ * guardada esté muerta, en cuanto una de las conocidas contesta, seguimos.
+ */
+async function findWorking(order: string[], token: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let left = order.length;
+    let done = false;
+    const finish = (v: string | null) => {
+      if (done) return;
+      done = true;
+      resolve(v);
+    };
+    if (left === 0) {
+      finish(null);
+      return;
+    }
+    for (const base of order) {
+      fetchOne(base, '/api/info', undefined, token, 4000)
+        .then(() => finish(base))
+        .catch(() => {
+          if (--left === 0) finish(null);
+        });
+    }
+  });
+}
+
+/**
+ * Petición a la API. Usa la dirección activa y, si no responde a nivel de red,
+ * prueba EN PARALELO el resto de direcciones conocidas (IP local nueva,
+ * Tailscale, nombre .local…) y reintenta con la que funcione.
+ *
+ * Un error HTTP (401, 404…) NO prueba otra dirección: significa que el host es
+ * el correcto y el problema es otro, así que se devuelve tal cual.
  */
 async function request(path: string, init?: ReqInit): Promise<string> {
   const creds = await loadCreds();
   if (!creds) throw new Error('Sin conexión configurada');
   const order = normalizeUrls([creds.baseUrl, ...creds.urls]);
-  const withTimeout = order.length > 1;
-  let lastErr: unknown = null;
 
-  for (const base of order) {
-    const ctrl = withTimeout ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 6000) : null;
-    try {
-      const res = await fetch(base + path, {
-        method: init?.method,
-        headers: { Authorization: authHeader(creds.token), ...(init?.headers ?? {}) },
-        body: init?.body,
-        signal: ctrl ? ctrl.signal : undefined,
-      });
-      const text = await res.text();
-      if (!res.ok) throw new HttpError(res.status, text);
-      if (base !== creds.baseUrl) await activateUrl(base);
-      return text;
-    } catch (e) {
-      lastErr = e;
-      if (e instanceof HttpError) throw e;
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+  let lastErr: unknown = null;
+  try {
+    return await fetchOne(order[0], path, init, creds.token, 4000);
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    lastErr = e;
   }
-  throw lastErr instanceof Error ? lastErr : new Error('No se pudo conectar con el servidor');
+
+  // La dirección activa no contesta: buscamos otra que sí.
+  const good = await findWorking(order, creds.token);
+  if (!good) {
+    throw lastErr instanceof Error ? lastErr : new Error('No se pudo conectar con el servidor');
+  }
+  if (good !== order[0]) await activateUrl(good);
+  return fetchOne(good, path, init, creds.token, 8000);
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
@@ -197,6 +243,24 @@ export async function ping(): Promise<boolean> {
 export function baseUrlFromLink(link: string): string | null {
   const m = link.trim().match(/^(https?:\/\/[^/]+)\/auth\/connect\//);
   return m ? m[1] : null;
+}
+
+/**
+ * El PC mete en el enlace direcciones «estables» (nombre .local, Tailscale)
+ * detrás de un `#u=`. Aquí se leen para guardarlas: así, cuando cambie la IP
+ * del PC, la app ya sabe a dónde llamar sin volver a emparejar.
+ */
+export function extraUrlsFromLink(link: string): string[] {
+  const m = link.match(/#u=([^#\s]+)/);
+  if (!m) return [];
+  const raw = (() => {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      return m[1];
+    }
+  })();
+  return normalizeUrls(raw.split(','));
 }
 
 /** Canjea un enlace de emparejamiento y devuelve el token. */

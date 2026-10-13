@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { setHapticsEnabled } from '@/lib/haptics';
+import { setTypingHapticsEnabled } from '@/lib/typing-haptics';
 
 const KEY = 'oc.prefs';
 
@@ -16,6 +17,8 @@ export type Prefs = {
   /** Razonamiento por defecto (low/medium/high) o null = el del modelo. */
   variant: string | null;
   haptics: boolean;
+  /** Vibración suave mientras el agente escribe, al ritmo de la respuesta. */
+  typingHaptics: boolean;
   /** Aviso dentro de la app cuando el agente termina. */
   inAppNotify: boolean;
   /** Enviar al agente sin interrumpir (steering). */
@@ -31,6 +34,7 @@ export const DEFAULT_PREFS: Prefs = {
   providerID: 'deepseek',
   variant: null,
   haptics: true,
+  typingHaptics: true,
   inAppNotify: true,
   steer: false,
   ntfyTopic: '',
@@ -64,14 +68,24 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       .then((raw) => {
         if (!raw) return;
         const saved = JSON.parse(raw) as Partial<Prefs>;
-        setPrefs((p) => ({ ...p, ...saved }));
+        setPrefs((p) => {
+          const merged = { ...p, ...saved };
+          // Arreglo: versiones anteriores guardaban el NOMBRE del agente
+          // («Build») en vez de su id («build»), y las sesiones nuevas morían
+          // con AgentNotFoundError. Los ids de agente van en minúscula.
+          if (typeof merged.agent === 'string' && merged.agent !== merged.agent.toLowerCase()) {
+            merged.agent = merged.agent.toLowerCase();
+          }
+          return merged;
+        });
       })
       .catch(() => {});
   }, []);
 
   useEffect(() => {
     setHapticsEnabled(prefs.haptics);
-  }, [prefs.haptics]);
+    setTypingHapticsEnabled(prefs.haptics && prefs.typingHaptics);
+  }, [prefs.haptics, prefs.typingHaptics]);
 
   const value = useMemo<Ctx>(() => {
     const save = (next: Prefs) => {

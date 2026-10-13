@@ -18,7 +18,7 @@ import {
 import { Sym } from '@/components/settings-row';
 import type { Palette } from '@/theme/palettes';
 import { usePalette } from '@/theme/theme';
-import { baseUrlFromLink, ping, redeem, saveCreds } from '@/lib/api';
+import { baseUrlFromLink, extraUrlsFromLink, ping, redeem, rememberUrls, saveCreds } from '@/lib/api';
 
 const EXAMPLE_URL = 'http://192.168.1.37:49374';
 
@@ -80,6 +80,11 @@ export default function ConectarScreen() {
         const token = await redeem(v);
         console.log('[conectar] token recibido, longitud:', token.length);
         await saveCreds(base ?? url, token);
+        // El enlace puede traer direcciones «estables» (nombre .local, Tailscale)
+        // detrás de `#u=`. Se guardan para que un cambio de IP del PC no vuelva
+        // a romper la conexión.
+        const extras = extraUrlsFromLink(v);
+        if (extras.length > 0) await rememberUrls(extras);
         // Aprende las demás direcciones del servidor (p. ej. Tailscale) para
         // que un cambio de IP no vuelva a romper la conexión.
         await ping().catch(() => {});
